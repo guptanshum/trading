@@ -586,7 +586,7 @@ def main():
         # Auto Shadow Trading Settings
         st.header("Auto Shadow Trading")
 
-        auto_trade = st.checkbox("Enable Auto Trading", value=False)
+        auto_trade = st.checkbox("Enable Auto Trading", value=True)
 
         if auto_trade:
             confidence_threshold = st.slider(
