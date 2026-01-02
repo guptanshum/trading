@@ -943,7 +943,6 @@ TARGET 2: ${levels.target_2:.2f}  (R:R {levels.risk_reward_2:.1f}:1)
                 else:
                     consensus, confidence, _ = strategy.get_consensus_signal(df, Asset.GOLD)
                     if consensus != SignalType.HOLD:
-                        from strategies import Signal
                         signal = Signal(
                             timestamp=datetime.now(),
                             asset=Asset.GOLD,
@@ -968,7 +967,6 @@ TARGET 2: ${levels.target_2:.2f}  (R:R {levels.risk_reward_2:.1f}:1)
                 else:
                     consensus, confidence, _ = strategy.get_consensus_signal(df, Asset.SILVER)
                     if consensus != SignalType.HOLD:
-                        from strategies import Signal
                         signal = Signal(
                             timestamp=datetime.now(),
                             asset=Asset.SILVER,
