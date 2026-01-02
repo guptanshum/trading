@@ -23,9 +23,9 @@ from data_fetcher import DataFetcher, fetch_and_prepare_data
 from indicators import TechnicalIndicators, add_indicators_to_data
 from analysis import StatisticalAnalysis, analyze_market_data
 from strategies import (
-    create_default_strategies, Asset, SignalType,
-    CompositeStrategy, generate_signal_context, Signal,
-    get_mirrored_signal
+    create_default_strategies, create_intraday_strategies,
+    Asset, SignalType, CompositeStrategy, generate_signal_context,
+    Signal, get_mirrored_signal, calculate_intraday_levels
 )
 from trading_engine import ShadowTradingEngine
 
@@ -678,14 +678,21 @@ def main():
         }
 
         executed_trades = []
+        trade_levels = {}  # Store levels for display
+
         for asset_name in trade_assets:
             asset = asset_map.get(asset_name)
             if asset:
                 price_col = f"{asset.value}_close"
                 if price_col in df.columns:
                     consensus, conf, signals = strategy.get_consensus_signal(df, asset)
+
+                    # Calculate entry/exit levels
+                    levels = calculate_intraday_levels(df, asset, consensus, conf)
+                    if levels:
+                        trade_levels[asset] = levels
+
                     if consensus != SignalType.HOLD and conf >= confidence_threshold:
-                        from strategies import Signal
                         signal = Signal(
                             timestamp=datetime.now(),
                             asset=asset,
@@ -693,14 +700,28 @@ def main():
                             strategy="AutoTrader",
                             price=df[price_col].iloc[-1],
                             confidence=conf,
-                            reason=f"Auto-executed: {len(signals)} strategies agree"
+                            reason=f"Auto-executed: {len(signals)} strategies agree",
+                            indicators={
+                                'stop_loss': levels.stop_loss if levels else None,
+                                'target_1': levels.target_1 if levels else None,
+                                'target_2': levels.target_2 if levels else None,
+                            }
                         )
                         trade = engine.execute_signal(signal)
                         if trade:
-                            executed_trades.append(f"{asset.get_display_name()}: {trade.side} @ ${trade.price:.2f}")
+                            level_info = ""
+                            if levels:
+                                level_info = f" | Stop: ${levels.stop_loss:.2f}, Target: ${levels.target_1:.2f}"
+                            executed_trades.append(f"{asset.get_display_name()}: {trade.side} @ ${trade.price:.2f}{level_info}")
 
         if executed_trades:
-            st.success(f"Auto-executed {len(executed_trades)} trade(s): " + ", ".join(executed_trades))
+            st.success(f"Auto-executed {len(executed_trades)} trade(s):")
+            for trade_info in executed_trades:
+                st.write(f"  {trade_info}")
+
+        # Store trade levels in session state for display
+        if trade_levels:
+            st.session_state['trade_levels'] = trade_levels
 
     # Main content tabs
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -768,6 +789,54 @@ def main():
             st.metric("Confidence Threshold", f"{confidence_threshold:.0%}")
         with col3:
             st.metric("Active Assets", len(trade_assets) if trade_assets else 0)
+
+        st.divider()
+
+        # Current Trading Levels
+        st.subheader("Current Entry/Exit Levels")
+
+        # Calculate levels for all tracked assets
+        asset_map = {
+            "Gold (GLD)": Asset.GOLD,
+            "Silver (SLV)": Asset.SILVER,
+            "Gold Bear (GLL)": Asset.GOLD_BEAR,
+            "Silver Bear (ZSL)": Asset.SILVER_BEAR
+        }
+
+        levels_cols = st.columns(2)
+        col_idx = 0
+
+        for asset_name, asset in asset_map.items():
+            if trade_assets and asset_name not in trade_assets:
+                continue
+
+            consensus, conf, signals = strategy.get_consensus_signal(df, asset)
+            levels = calculate_intraday_levels(df, asset, consensus, conf)
+
+            with levels_cols[col_idx % 2]:
+                signal_color = "green" if consensus.value > 0 else "red" if consensus.value < 0 else "gray"
+
+                st.markdown(f"**{asset_name}** - :{signal_color}[{consensus.name}] ({conf:.0%})")
+
+                if levels:
+                    if consensus.value > 0:  # BUY
+                        st.code(f"""
+TARGET 2: ${levels.target_2:.2f}  (R:R {levels.risk_reward_2:.1f}:1)
+TARGET 1: ${levels.target_1:.2f}  (R:R {levels.risk_reward_1:.1f}:1)
+ENTRY:    ${levels.entry_price:.2f}  ◄ BUY
+STOP:     ${levels.stop_loss:.2f}  (Risk: ${levels.risk_amount:.2f})
+""", language=None)
+                    elif consensus.value < 0:  # SELL
+                        st.code(f"""
+STOP:     ${levels.stop_loss:.2f}  (Risk: ${levels.risk_amount:.2f})
+ENTRY:    ${levels.entry_price:.2f}  ◄ SHORT
+TARGET 1: ${levels.target_1:.2f}  (R:R {levels.risk_reward_1:.1f}:1)
+TARGET 2: ${levels.target_2:.2f}  (R:R {levels.risk_reward_2:.1f}:1)
+""", language=None)
+                else:
+                    st.info("No entry (HOLD)")
+
+            col_idx += 1
 
         st.divider()
 
