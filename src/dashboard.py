@@ -96,6 +96,21 @@ def create_price_chart(df: pd.DataFrame, asset: str, show_indicators: bool = Tru
     """Create candlestick chart with indicators"""
     prefix = f"{asset}_"
 
+    # Check if required columns exist
+    required_cols = [f'{prefix}open', f'{prefix}high', f'{prefix}low', f'{prefix}close']
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        # Return empty figure with error message
+        fig = go.Figure()
+        fig.add_annotation(
+            text=f"Data unavailable for {asset.upper()}. Missing: {', '.join(missing_cols)}",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=14, color="red")
+        )
+        fig.update_layout(height=CHART_HEIGHT)
+        return fig
+
     # Create figure with secondary y-axis
     fig = make_subplots(
         rows=3, cols=1,
@@ -598,6 +613,14 @@ def main():
         st.warning("No data available. Market might be closed.")
         return
 
+    # Check for required columns
+    required_base_cols = ['gold_close', 'silver_close']
+    missing_base = [col for col in required_base_cols if col not in df.columns]
+    if missing_base:
+        st.error(f"Data incomplete. Missing columns: {', '.join(missing_base)}. This may be due to rate limiting.")
+        st.info("Please wait a few minutes and refresh the page.")
+        return
+
     # Data loaded timestamp - prominent display
     data_time = datetime.now()
     if auto_refresh:
@@ -686,47 +709,53 @@ def main():
 
         with col1:
             if st.button("Execute Gold Signal", type="primary"):
-                consensus, confidence, _ = strategy.get_consensus_signal(df, Asset.GOLD)
-                if consensus != SignalType.HOLD:
-                    from strategies import Signal
-                    signal = Signal(
-                        timestamp=datetime.now(),
-                        asset=Asset.GOLD,
-                        signal_type=consensus,
-                        strategy="Manual",
-                        price=df['gold_close'].iloc[-1],
-                        confidence=confidence,
-                        reason="Manual execution from dashboard"
-                    )
-                    trade = engine.execute_signal(signal)
-                    if trade:
-                        st.success(f"Executed: {trade.side} {trade.quantity:.4f} @ ${trade.price:.2f}")
-                    else:
-                        st.warning("Trade rejected (check risk limits)")
+                if 'gold_close' not in df.columns:
+                    st.error("Gold price data not available")
                 else:
-                    st.info("No signal to execute (HOLD)")
+                    consensus, confidence, _ = strategy.get_consensus_signal(df, Asset.GOLD)
+                    if consensus != SignalType.HOLD:
+                        from strategies import Signal
+                        signal = Signal(
+                            timestamp=datetime.now(),
+                            asset=Asset.GOLD,
+                            signal_type=consensus,
+                            strategy="Manual",
+                            price=df['gold_close'].iloc[-1],
+                            confidence=confidence,
+                            reason="Manual execution from dashboard"
+                        )
+                        trade = engine.execute_signal(signal)
+                        if trade:
+                            st.success(f"Executed: {trade.side} {trade.quantity:.4f} @ ${trade.price:.2f}")
+                        else:
+                            st.warning("Trade rejected (check risk limits)")
+                    else:
+                        st.info("No signal to execute (HOLD)")
 
         with col2:
             if st.button("Execute Silver Signal", type="primary"):
-                consensus, confidence, _ = strategy.get_consensus_signal(df, Asset.SILVER)
-                if consensus != SignalType.HOLD:
-                    from strategies import Signal
-                    signal = Signal(
-                        timestamp=datetime.now(),
-                        asset=Asset.SILVER,
-                        signal_type=consensus,
-                        strategy="Manual",
-                        price=df['silver_close'].iloc[-1],
-                        confidence=confidence,
-                        reason="Manual execution from dashboard"
-                    )
-                    trade = engine.execute_signal(signal)
-                    if trade:
-                        st.success(f"Executed: {trade.side} {trade.quantity:.4f} @ ${trade.price:.2f}")
-                    else:
-                        st.warning("Trade rejected (check risk limits)")
+                if 'silver_close' not in df.columns:
+                    st.error("Silver price data not available")
                 else:
-                    st.info("No signal to execute (HOLD)")
+                    consensus, confidence, _ = strategy.get_consensus_signal(df, Asset.SILVER)
+                    if consensus != SignalType.HOLD:
+                        from strategies import Signal
+                        signal = Signal(
+                            timestamp=datetime.now(),
+                            asset=Asset.SILVER,
+                            signal_type=consensus,
+                            strategy="Manual",
+                            price=df['silver_close'].iloc[-1],
+                            confidence=confidence,
+                            reason="Manual execution from dashboard"
+                        )
+                        trade = engine.execute_signal(signal)
+                        if trade:
+                            st.success(f"Executed: {trade.side} {trade.quantity:.4f} @ ${trade.price:.2f}")
+                        else:
+                            st.warning("Trade rejected (check risk limits)")
+                    else:
+                        st.info("No signal to execute (HOLD)")
 
     with tab4:
         display_analysis(df)
