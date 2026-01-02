@@ -55,27 +55,23 @@ def get_strategy():
     return create_default_strategies()
 
 
-@st.cache_data(ttl=300)  # Cache for 5 minutes to avoid rate limiting
+@st.cache_data(ttl=300)  # Cache for 5 minutes
 def fetch_data(period: str = "6mo"):
-    """Fetch and prepare market data with retry logic"""
-    import time as retry_time
+    """
+    Fetch and prepare market data using hybrid approach:
+    - Uses stored historical data as base
+    - Fetches only recent data from Yahoo to update
+    - Falls back to stored data if rate limited
+    """
+    try:
+        # fetch_and_prepare_data now handles hybrid approach internally
+        df = fetch_and_prepare_data(period=period, use_stored_data=True)
+        if len(df) > 0:
+            df = add_indicators_to_data(df)
+            return df
+    except Exception as e:
+        logger.error(f"Error in fetch_data: {e}")
 
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            df = fetch_and_prepare_data(period=period)
-            if len(df) > 0:
-                df = add_indicators_to_data(df)
-                return df
-        except Exception as e:
-            if "rate" in str(e).lower() or "429" in str(e):
-                wait_time = (attempt + 1) * 30  # 30s, 60s, 90s backoff
-                logger.warning(f"Rate limited, waiting {wait_time}s before retry...")
-                retry_time.sleep(wait_time)
-            else:
-                raise e
-
-    # Return empty df if all retries failed
     return pd.DataFrame()
 
 

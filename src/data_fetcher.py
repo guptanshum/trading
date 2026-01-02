@@ -3,6 +3,8 @@ Data fetcher module for Gold & Silver ETF data from Yahoo Finance
 Supports both bull (long) and bear (inverse) ETFs
 """
 import logging
+import os
+import glob
 from datetime import datetime, timedelta
 from typing import Optional, Tuple, Dict
 import pandas as pd
@@ -297,28 +299,96 @@ class DataFetcher:
         return combined.dropna()
 
 
+def get_data_file_path() -> str:
+    """Get the path to the stored historical data file"""
+    # Look for most recent historical data file
+    data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
+    os.makedirs(data_dir, exist_ok=True)
+
+    # Find the most recent historical data file
+    files = glob.glob(os.path.join(data_dir, 'historical_data_*.csv'))
+    if files:
+        return max(files)  # Most recent by filename
+    return os.path.join(data_dir, 'historical_data.csv')
+
+
+def load_stored_data() -> pd.DataFrame:
+    """
+    Load historical data from stored CSV file
+
+    Returns:
+        DataFrame with historical data, or empty DataFrame if not found
+    """
+    file_path = get_data_file_path()
+    try:
+        if os.path.exists(file_path):
+            df = pd.read_csv(file_path, index_col='Date', parse_dates=True)
+            logger.info(f"Loaded {len(df)} rows from {file_path}")
+            return df
+    except Exception as e:
+        logger.warning(f"Failed to load stored data: {e}")
+    return pd.DataFrame()
+
+
+def save_data_to_file(df: pd.DataFrame, filename: str = None) -> str:
+    """
+    Save DataFrame to CSV file
+
+    Args:
+        df: DataFrame to save
+        filename: Optional filename, defaults to historical_data_YYYYMMDD.csv
+
+    Returns:
+        Path to saved file
+    """
+    data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
+    os.makedirs(data_dir, exist_ok=True)
+
+    if filename is None:
+        filename = f"historical_data_{datetime.now().strftime('%Y%m%d')}.csv"
+
+    file_path = os.path.join(data_dir, filename)
+    df.to_csv(file_path, index=True, index_label='Date')
+    logger.info(f"Saved {len(df)} rows to {file_path}")
+    return file_path
+
+
 def fetch_and_prepare_data(
     gold_ticker: str = GOLD_TICKER,
     silver_ticker: str = SILVER_TICKER,
     gold_bear_ticker: str = GOLD_BEAR_TICKER,
     silver_bear_ticker: str = SILVER_BEAR_TICKER,
     period: str = HISTORICAL_PERIOD,
-    include_bear: bool = True
+    include_bear: bool = True,
+    use_stored_data: bool = True
 ) -> pd.DataFrame:
     """
-    Convenience function to fetch and prepare data for analysis
+    Fetch and prepare data using hybrid approach:
+    1. Load stored historical data as base
+    2. Fetch only recent data from Yahoo to update
+    3. Fall back to stored data if rate limited
 
     Args:
         gold_ticker: Gold ETF ticker symbol
         silver_ticker: Silver ETF ticker symbol
         gold_bear_ticker: Gold bear ETF ticker symbol
         silver_bear_ticker: Silver bear ETF ticker symbol
-        period: Historical period to fetch
+        period: Historical period to fetch (used as fallback)
         include_bear: Whether to include bear ETFs
+        use_stored_data: Whether to use hybrid approach with stored data
 
     Returns:
         Combined DataFrame ready for analysis with all assets
     """
+    stored_df = pd.DataFrame()
+
+    # Step 1: Load stored historical data
+    if use_stored_data:
+        stored_df = load_stored_data()
+        if not stored_df.empty:
+            logger.info(f"Loaded stored data: {stored_df.index[0]} to {stored_df.index[-1]}")
+
+    # Step 2: Try to fetch recent data from Yahoo
     fetcher = DataFetcher(
         gold_ticker=gold_ticker,
         silver_ticker=silver_ticker,
@@ -326,8 +396,50 @@ def fetch_and_prepare_data(
         silver_bear_ticker=silver_bear_ticker,
         include_bear=include_bear
     )
-    data = fetcher.fetch_historical_daily(period)
-    return fetcher.get_combined_data(data)
+
+    try:
+        # If we have stored data, only fetch last 7 days to update
+        if not stored_df.empty:
+            fetch_period = "7d"
+            logger.info(f"Fetching recent {fetch_period} data to update stored data...")
+        else:
+            fetch_period = period
+            logger.info(f"No stored data, fetching full {fetch_period} from Yahoo...")
+
+        data = fetcher.fetch_historical_daily(fetch_period)
+        fresh_df = fetcher.get_combined_data(data)
+
+        if fresh_df.empty:
+            raise ValueError("Empty data received from Yahoo")
+
+        logger.info(f"Fetched fresh data: {len(fresh_df)} rows")
+
+        # Step 3: Merge stored and fresh data
+        if not stored_df.empty and not fresh_df.empty:
+            # Combine: use stored data + update with fresh data
+            # Fresh data takes priority for overlapping dates
+            combined = pd.concat([stored_df, fresh_df])
+            combined = combined[~combined.index.duplicated(keep='last')]
+            combined = combined.sort_index()
+            logger.info(f"Combined data: {len(combined)} rows ({combined.index[0]} to {combined.index[-1]})")
+            return combined
+        else:
+            return fresh_df
+
+    except Exception as e:
+        error_msg = str(e).lower()
+        if "rate" in error_msg or "429" in error_msg or "too many" in error_msg:
+            logger.warning(f"Rate limited by Yahoo Finance: {e}")
+        else:
+            logger.error(f"Error fetching data: {e}")
+
+        # Step 4: Fall back to stored data
+        if not stored_df.empty:
+            logger.info("Falling back to stored historical data")
+            return stored_df
+        else:
+            logger.error("No stored data available as fallback")
+            return pd.DataFrame()
 
 
 if __name__ == "__main__":
