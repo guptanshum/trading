@@ -88,6 +88,14 @@ class BaseStrategy:
         """Generate trading signals - to be implemented by subclasses"""
         raise NotImplementedError
 
+    def get_current_signal(self, df: pd.DataFrame) -> Optional[Signal]:
+        """
+        Get signal based on CURRENT state of indicators (latest row only).
+        This should be used for live trading instead of generate_signals().
+        Override in subclasses.
+        """
+        return None
+
     def backtest(self, df: pd.DataFrame) -> dict:
         """Backtest the strategy on historical data"""
         signals = self.generate_signals(df)
@@ -198,6 +206,69 @@ class MACrossoverStrategy(BaseStrategy):
 
         return signals
 
+    def get_current_signal(self, df: pd.DataFrame) -> Optional[Signal]:
+        """Get signal based on current MA positions (not crossover events)"""
+        prefix = f"{self.asset.value}_"
+        sma_fast_col = f"{prefix}sma_fast"
+        sma_slow_col = f"{prefix}sma_slow"
+        close_col = f"{prefix}close"
+
+        if sma_fast_col not in df.columns or sma_slow_col not in df.columns:
+            return None
+
+        row = df.iloc[-1]
+        fast_ma = row[sma_fast_col]
+        slow_ma = row[sma_slow_col]
+        price = row[close_col]
+
+        if pd.isna(fast_ma) or pd.isna(slow_ma):
+            return None
+
+        spread_pct = ((fast_ma - slow_ma) / slow_ma) * 100
+        price_vs_ma = ((price - slow_ma) / slow_ma) * 100
+
+        # Determine signal based on current state
+        if fast_ma > slow_ma:
+            # Bullish: fast MA above slow MA
+            strength = "strong" if spread_pct > 1.5 else "moderate"
+            reason = (
+                f"BULLISH TREND: {self.fast_period}-SMA (${fast_ma:,.2f}) is above "
+                f"{self.slow_period}-SMA (${slow_ma:,.2f}). "
+                f"Spread: +{spread_pct:.2f}% ({strength}). "
+                f"Price ${price:,.2f} is {price_vs_ma:+.2f}% from slow MA."
+            )
+            signal_type = SignalType.STRONG_BUY if spread_pct > 2 else SignalType.BUY
+            confidence = min(0.5 + spread_pct / 5, 0.9)
+        elif fast_ma < slow_ma:
+            # Bearish: fast MA below slow MA
+            strength = "strong" if abs(spread_pct) > 1.5 else "moderate"
+            reason = (
+                f"BEARISH TREND: {self.fast_period}-SMA (${fast_ma:,.2f}) is below "
+                f"{self.slow_period}-SMA (${slow_ma:,.2f}). "
+                f"Spread: {spread_pct:.2f}% ({strength}). "
+                f"Price ${price:,.2f} is {price_vs_ma:+.2f}% from slow MA."
+            )
+            signal_type = SignalType.STRONG_SELL if spread_pct < -2 else SignalType.SELL
+            confidence = min(0.5 + abs(spread_pct) / 5, 0.9)
+        else:
+            return None  # Exactly equal - no signal
+
+        return Signal(
+            timestamp=df.index[-1] if isinstance(df.index[-1], datetime) else datetime.now(),
+            asset=self.asset,
+            signal_type=signal_type,
+            strategy=self.name,
+            price=price,
+            confidence=confidence,
+            reason=reason,
+            indicators={
+                'fast_ma': fast_ma,
+                'slow_ma': slow_ma,
+                'spread_pct': spread_pct,
+                'price_vs_slow_ma_pct': price_vs_ma
+            }
+        )
+
 
 class RSIMeanReversionStrategy(BaseStrategy):
     """RSI-based Mean Reversion Strategy"""
@@ -302,6 +373,88 @@ class RSIMeanReversionStrategy(BaseStrategy):
             prev_rsi = rsi
 
         return signals
+
+    def get_current_signal(self, df: pd.DataFrame) -> Optional[Signal]:
+        """Get signal based on current RSI level (not crossover events)"""
+        prefix = f"{self.asset.value}_"
+        rsi_col = f"{prefix}rsi"
+        close_col = f"{prefix}close"
+
+        if rsi_col not in df.columns:
+            return None
+
+        row = df.iloc[-1]
+        rsi = row[rsi_col]
+        price = row[close_col]
+
+        if pd.isna(rsi):
+            return None
+
+        # Determine signal based on current RSI zone
+        if rsi < self.oversold:
+            # Oversold - potential buy
+            depth = self.oversold - rsi
+            depth_desc = "extreme" if depth > 10 else "significant" if depth > 5 else "moderate"
+            confidence = min(0.5 + depth / 50, 0.9)
+
+            reason = (
+                f"RSI OVERSOLD: Current RSI is {rsi:.1f}, which is {depth:.1f} pts below "
+                f"the {self.oversold} oversold threshold ({depth_desc}). "
+                f"Price: ${price:,.2f}. "
+                f"Asset may be undervalued - watch for reversal confirmation."
+            )
+            signal_type = SignalType.STRONG_BUY if depth > 10 else SignalType.BUY
+
+        elif rsi > self.overbought:
+            # Overbought - potential sell
+            excess = rsi - self.overbought
+            excess_desc = "extreme" if excess > 10 else "significant" if excess > 5 else "moderate"
+            confidence = min(0.5 + excess / 50, 0.9)
+
+            reason = (
+                f"RSI OVERBOUGHT: Current RSI is {rsi:.1f}, which is {excess:.1f} pts above "
+                f"the {self.overbought} overbought threshold ({excess_desc}). "
+                f"Price: ${price:,.2f}. "
+                f"Asset may be overvalued - watch for reversal confirmation."
+            )
+            signal_type = SignalType.STRONG_SELL if excess > 10 else SignalType.SELL
+
+        elif rsi >= 45 and rsi <= 55:
+            # Neutral zone - hold
+            return None
+        elif rsi > 55:
+            # Upper neutral zone - slight bullish bias
+            confidence = 0.4
+            reason = (
+                f"RSI NEUTRAL-BULLISH: Current RSI is {rsi:.1f}, above midline but below "
+                f"overbought. Price: ${price:,.2f}. Momentum slightly positive."
+            )
+            signal_type = SignalType.HOLD
+            return None  # Don't generate signal for neutral zones
+        else:
+            # Lower neutral zone - slight bearish bias
+            confidence = 0.4
+            reason = (
+                f"RSI NEUTRAL-BEARISH: Current RSI is {rsi:.1f}, below midline but above "
+                f"oversold. Price: ${price:,.2f}. Momentum slightly negative."
+            )
+            signal_type = SignalType.HOLD
+            return None  # Don't generate signal for neutral zones
+
+        return Signal(
+            timestamp=df.index[-1] if isinstance(df.index[-1], datetime) else datetime.now(),
+            asset=self.asset,
+            signal_type=signal_type,
+            strategy=self.name,
+            price=price,
+            confidence=confidence,
+            reason=reason,
+            indicators={
+                'rsi': rsi,
+                'oversold_threshold': self.oversold,
+                'overbought_threshold': self.overbought
+            }
+        )
 
 
 class BollingerBandStrategy(BaseStrategy):
@@ -410,6 +563,99 @@ class BollingerBandStrategy(BaseStrategy):
 
         return signals
 
+    def get_current_signal(self, df: pd.DataFrame) -> Optional[Signal]:
+        """Get signal based on current price position relative to Bollinger Bands"""
+        prefix = f"{self.asset.value}_"
+        bb_upper = f"{prefix}bb_upper"
+        bb_lower = f"{prefix}bb_lower"
+        bb_mid = f"{prefix}bb_mid"
+        close_col = f"{prefix}close"
+
+        if bb_upper not in df.columns:
+            return None
+
+        row = df.iloc[-1]
+        close = row[close_col]
+        upper = row[bb_upper]
+        lower = row[bb_lower]
+        mid = row[bb_mid]
+
+        if pd.isna(upper) or pd.isna(lower) or pd.isna(mid):
+            return None
+
+        band_width = ((upper - lower) / mid) * 100
+        width_desc = "tight" if band_width < 3 else "normal" if band_width < 6 else "wide"
+
+        # Calculate position within bands (0 = lower, 1 = upper)
+        band_position = (close - lower) / (upper - lower)
+        pct_from_mid = ((close - mid) / mid) * 100
+
+        # Determine signal based on current position
+        if close <= lower:
+            # Price at or below lower band - oversold
+            pct_below = ((lower - close) / lower) * 100
+            confidence = min(0.5 + pct_below / 5, 0.85)
+            reason = (
+                f"BB LOWER BAND TOUCH: Price ${close:,.2f} is at/below lower band ${lower:,.2f}. "
+                f"Band width: {band_width:.1f}% ({width_desc} volatility). "
+                f"Position: {band_position:.1%} within bands. "
+                f"Price at 2-sigma extreme - potential mean reversion opportunity."
+            )
+            signal_type = SignalType.BUY
+
+        elif close >= upper:
+            # Price at or above upper band - overbought
+            pct_above = ((close - upper) / upper) * 100
+            confidence = min(0.5 + pct_above / 5, 0.85)
+            reason = (
+                f"BB UPPER BAND TOUCH: Price ${close:,.2f} is at/above upper band ${upper:,.2f}. "
+                f"Band width: {band_width:.1f}% ({width_desc} volatility). "
+                f"Position: {band_position:.1%} within bands. "
+                f"Price at 2-sigma extreme - potential reversal zone."
+            )
+            signal_type = SignalType.SELL
+
+        elif band_position < 0.2:
+            # Price near lower band but not touching
+            confidence = 0.5
+            reason = (
+                f"BB NEAR LOWER: Price ${close:,.2f} is in lower 20% of bands. "
+                f"Lower: ${lower:,.2f}, Mid: ${mid:,.2f}, Upper: ${upper:,.2f}. "
+                f"Band position: {band_position:.1%}. Mild bullish bias."
+            )
+            signal_type = SignalType.BUY
+
+        elif band_position > 0.8:
+            # Price near upper band but not touching
+            confidence = 0.5
+            reason = (
+                f"BB NEAR UPPER: Price ${close:,.2f} is in upper 20% of bands. "
+                f"Lower: ${lower:,.2f}, Mid: ${mid:,.2f}, Upper: ${upper:,.2f}. "
+                f"Band position: {band_position:.1%}. Mild bearish bias."
+            )
+            signal_type = SignalType.SELL
+
+        else:
+            # Price in middle zone - neutral
+            return None
+
+        return Signal(
+            timestamp=df.index[-1] if isinstance(df.index[-1], datetime) else datetime.now(),
+            asset=self.asset,
+            signal_type=signal_type,
+            strategy=self.name,
+            price=close,
+            confidence=confidence,
+            reason=reason,
+            indicators={
+                'bb_upper': upper,
+                'bb_lower': lower,
+                'bb_mid': mid,
+                'band_width_pct': band_width,
+                'band_position': band_position
+            }
+        )
+
 
 class MACDStrategy(BaseStrategy):
     """MACD Crossover Strategy"""
@@ -506,6 +752,89 @@ class MACDStrategy(BaseStrategy):
                 ))
 
         return signals
+
+    def get_current_signal(self, df: pd.DataFrame) -> Optional[Signal]:
+        """Get signal based on current MACD vs Signal line position"""
+        prefix = f"{self.asset.value}_"
+        macd_col = f"{prefix}macd"
+        signal_col = f"{prefix}macd_signal"
+        hist_col = f"{prefix}macd_hist"
+        close_col = f"{prefix}close"
+
+        if macd_col not in df.columns:
+            return None
+
+        row = df.iloc[-1]
+        macd = row[macd_col]
+        signal = row[signal_col]
+        hist = row[hist_col]
+        price = row[close_col]
+
+        if pd.isna(macd) or pd.isna(signal):
+            return None
+
+        # Calculate momentum strength
+        hist_strength = abs(hist) * 100  # Scale histogram for comparison
+
+        # Determine signal based on current MACD position
+        if macd > signal:
+            # MACD above signal line - bullish
+            spread = macd - signal
+            if macd > 0:
+                # MACD above signal AND above zero - strong bullish
+                zone = "above zero (bullish territory)"
+                signal_type = SignalType.STRONG_BUY if hist > 0.01 else SignalType.BUY
+                confidence = min(0.6 + abs(hist) * 10, 0.9)
+            else:
+                # MACD above signal but below zero - recovering
+                zone = "below zero (recovery phase)"
+                signal_type = SignalType.BUY
+                confidence = min(0.5 + abs(hist) * 10, 0.8)
+
+            reason = (
+                f"MACD BULLISH: MACD ({macd:.3f}) is above Signal ({signal:.3f}). "
+                f"Histogram: {hist:+.3f}. Position: {zone}. "
+                f"Price: ${price:,.2f}. Bullish momentum active."
+            )
+
+        elif macd < signal:
+            # MACD below signal line - bearish
+            spread = signal - macd
+            if macd < 0:
+                # MACD below signal AND below zero - strong bearish
+                zone = "below zero (bearish territory)"
+                signal_type = SignalType.STRONG_SELL if hist < -0.01 else SignalType.SELL
+                confidence = min(0.6 + abs(hist) * 10, 0.9)
+            else:
+                # MACD below signal but above zero - weakening
+                zone = "above zero (weakening phase)"
+                signal_type = SignalType.SELL
+                confidence = min(0.5 + abs(hist) * 10, 0.8)
+
+            reason = (
+                f"MACD BEARISH: MACD ({macd:.3f}) is below Signal ({signal:.3f}). "
+                f"Histogram: {hist:.3f}. Position: {zone}. "
+                f"Price: ${price:,.2f}. Bearish momentum active."
+            )
+
+        else:
+            return None  # Exactly equal - no signal
+
+        return Signal(
+            timestamp=df.index[-1] if isinstance(df.index[-1], datetime) else datetime.now(),
+            asset=self.asset,
+            signal_type=signal_type,
+            strategy=self.name,
+            price=price,
+            confidence=confidence,
+            reason=reason,
+            indicators={
+                'macd': macd,
+                'signal': signal,
+                'histogram': hist,
+                'above_zero': macd > 0
+            }
+        )
 
 
 class GoldSilverRatioStrategy(BaseStrategy):
@@ -620,6 +949,99 @@ class GoldSilverRatioStrategy(BaseStrategy):
 
         return signals
 
+    def get_current_signal(self, df: pd.DataFrame) -> Optional[Signal]:
+        """Get signal based on current Gold/Silver ratio z-score"""
+        if 'gs_ratio' not in df.columns:
+            return None
+
+        # Calculate z-score for current ratio
+        ratio_series = df['gs_ratio']
+        ratio_ma = ratio_series.rolling(self.lookback).mean()
+        ratio_std = ratio_series.rolling(self.lookback).std()
+
+        row = df.iloc[-1]
+        ratio = row['gs_ratio']
+        mean_ratio = ratio_ma.iloc[-1]
+        std_ratio = ratio_std.iloc[-1]
+
+        if pd.isna(ratio) or pd.isna(mean_ratio) or pd.isna(std_ratio) or std_ratio == 0:
+            return None
+
+        zscore = (ratio - mean_ratio) / std_ratio
+        percentile = 50 + (zscore * 34)
+        percentile = min(max(percentile, 0), 100)
+
+        silver_price = row['silver_close']
+        gold_price = row['gold_close']
+
+        # Determine signal based on current z-score
+        if zscore > 2:
+            # Ratio extremely high - silver undervalued
+            confidence = min(0.5 + abs(zscore) * 0.1, 0.9)
+            reason = (
+                f"G/S RATIO HIGH (BUY SILVER): Ratio {ratio:.1f} is {zscore:.2f} std devs above mean ({mean_ratio:.1f}). "
+                f"~{percentile:.0f}th percentile - silver appears undervalued. "
+                f"Silver: ${silver_price:,.2f}, Gold: ${gold_price:,.2f}."
+            )
+            signal_type = SignalType.STRONG_BUY if zscore > 2.5 else SignalType.BUY
+            asset = Asset.SILVER
+            price = silver_price
+
+        elif zscore > 1:
+            # Ratio moderately high
+            confidence = 0.5
+            reason = (
+                f"G/S RATIO ELEVATED: Ratio {ratio:.1f} is {zscore:.2f} std devs above mean ({mean_ratio:.1f}). "
+                f"~{percentile:.0f}th percentile - mild silver bias."
+            )
+            signal_type = SignalType.BUY
+            asset = Asset.SILVER
+            price = silver_price
+
+        elif zscore < -2:
+            # Ratio extremely low - gold undervalued
+            confidence = min(0.5 + abs(zscore) * 0.1, 0.9)
+            reason = (
+                f"G/S RATIO LOW (BUY GOLD): Ratio {ratio:.1f} is {zscore:.2f} std devs below mean ({mean_ratio:.1f}). "
+                f"~{percentile:.0f}th percentile - gold appears undervalued. "
+                f"Gold: ${gold_price:,.2f}, Silver: ${silver_price:,.2f}."
+            )
+            signal_type = SignalType.STRONG_BUY if zscore < -2.5 else SignalType.BUY
+            asset = Asset.GOLD
+            price = gold_price
+
+        elif zscore < -1:
+            # Ratio moderately low
+            confidence = 0.5
+            reason = (
+                f"G/S RATIO DEPRESSED: Ratio {ratio:.1f} is {zscore:.2f} std devs below mean ({mean_ratio:.1f}). "
+                f"~{percentile:.0f}th percentile - mild gold bias."
+            )
+            signal_type = SignalType.BUY
+            asset = Asset.GOLD
+            price = gold_price
+
+        else:
+            # Ratio in normal range
+            return None
+
+        return Signal(
+            timestamp=df.index[-1] if isinstance(df.index[-1], datetime) else datetime.now(),
+            asset=asset,
+            signal_type=signal_type,
+            strategy=self.name,
+            price=price,
+            confidence=confidence,
+            reason=reason,
+            indicators={
+                'gs_ratio': ratio,
+                'zscore': zscore,
+                'mean_ratio': mean_ratio,
+                'std_ratio': std_ratio,
+                'percentile': percentile
+            }
+        )
+
 
 class CompositeStrategy(BaseStrategy):
     """Combines multiple strategies and aggregates signals"""
@@ -648,37 +1070,31 @@ class CompositeStrategy(BaseStrategy):
         asset: Asset
     ) -> tuple[SignalType, float, List[Signal]]:
         """
-        Get consensus signal from all strategies
+        Get consensus signal from all strategies based on CURRENT indicator state.
+
+        This method calls get_current_signal() on each strategy to evaluate the
+        current market state, rather than accumulating historical crossover events.
 
         Returns:
             Tuple of (consensus_signal, confidence, contributing_signals)
         """
-        signals = self.generate_signals(df)
+        current_signals = []
 
-        # Filter to most recent signals for this asset
-        asset_signals = [s for s in signals if s.asset == asset]
+        # Get current signal from each strategy
+        for strategy in self.strategies:
+            signal = strategy.get_current_signal(df)
+            if signal is not None and signal.asset == asset:
+                current_signals.append(signal)
 
-        if not asset_signals:
+        if not current_signals:
             return SignalType.HOLD, 0.0, []
 
-        # Get signals from last bar
-        last_time = df.index[-1]
-        recent_signals = [s for s in asset_signals
-                        if s.timestamp == last_time or
-                        (hasattr(last_time, 'date') and
-                         hasattr(s.timestamp, 'date') and
-                         s.timestamp.date() == last_time.date())]
-
-        if not recent_signals:
-            # Fall back to last 5 signals
-            recent_signals = asset_signals[-5:] if len(asset_signals) >= 5 else asset_signals
-
-        # Aggregate signals
-        total_score = sum(s.signal_type.value * s.confidence for s in recent_signals)
-        total_weight = sum(s.confidence for s in recent_signals)
+        # Aggregate signals based on current state
+        total_score = sum(s.signal_type.value * s.confidence for s in current_signals)
+        total_weight = sum(s.confidence for s in current_signals)
 
         if total_weight == 0:
-            return SignalType.HOLD, 0.0, recent_signals
+            return SignalType.HOLD, 0.0, current_signals
 
         avg_score = total_score / total_weight
 
@@ -696,7 +1112,7 @@ class CompositeStrategy(BaseStrategy):
 
         confidence = min(abs(avg_score) / 2, 1.0)
 
-        return consensus, confidence, recent_signals
+        return consensus, confidence, current_signals
 
 
 def generate_signal_context(
