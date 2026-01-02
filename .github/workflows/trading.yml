@@ -1,0 +1,60 @@
+name: Daily Trading Analysis
+
+on:
+  # Run twice daily on weekdays (US market hours)
+  schedule:
+    - cron: '30 14 * * 1-5'  # Mon-Fri at 14:30 UTC (9:30 AM ET - market open)
+    - cron: '0 21 * * 1-5'   # Mon-Fri at 21:00 UTC (4:00 PM ET - market close)
+
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      command:
+        description: 'Command to run'
+        required: true
+        default: 'analyze'
+        type: choice
+        options:
+          - analyze
+          - status
+
+jobs:
+  trading-analysis:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run analysis
+        env:
+          # Optional: Add Avanza credentials as secrets if needed
+          AVANZA_USERNAME: ${{ secrets.AVANZA_USERNAME }}
+          AVANZA_PASSWORD: ${{ secrets.AVANZA_PASSWORD }}
+          AVANZA_TOTP_SECRET: ${{ secrets.AVANZA_TOTP_SECRET }}
+          AVANZA_ACCOUNT_ID: ${{ secrets.AVANZA_ACCOUNT_ID }}
+          AVANZA_ENABLED: ${{ secrets.AVANZA_ENABLED }}
+        run: |
+          python main.py ${{ github.event.inputs.command || 'analyze' }}
+
+      - name: Upload analysis results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: analysis-results-${{ github.run_number }}
+          path: |
+            data/
+            *.log
+          retention-days: 30
+          if-no-files-found: ignore
