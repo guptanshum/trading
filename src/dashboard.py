@@ -583,6 +583,34 @@ def main():
 
         st.divider()
 
+        # Auto Shadow Trading Settings
+        st.header("Auto Shadow Trading")
+
+        auto_trade = st.checkbox("Enable Auto Trading", value=False)
+
+        if auto_trade:
+            confidence_threshold = st.slider(
+                "Min Confidence",
+                min_value=0.5,
+                max_value=0.95,
+                value=0.7,
+                step=0.05,
+                help="Only execute signals with confidence above this threshold"
+            )
+
+            trade_assets = st.multiselect(
+                "Trade Assets",
+                ["Gold (GLD)", "Silver (SLV)", "Gold Bear (GLL)", "Silver Bear (ZSL)"],
+                default=["Gold (GLD)", "Silver (SLV)"]
+            )
+
+            st.caption("Shadow trading simulates trades without real money")
+        else:
+            confidence_threshold = 0.7
+            trade_assets = []
+
+        st.divider()
+
         # Manual actions
         st.header("Actions")
 
@@ -594,6 +622,11 @@ def main():
             engine = get_trading_engine()
             engine.save_snapshot()
             st.success("Snapshot saved!")
+
+        if st.button("Reset Portfolio"):
+            engine = get_trading_engine()
+            engine.reset()
+            st.success("Portfolio reset to initial capital!")
 
     # Load data
     try:
@@ -635,9 +668,43 @@ def main():
             df['silver_close'].iloc[-1]
         )
 
+    # Auto-execute signals if enabled
+    if auto_trade and trade_assets:
+        asset_map = {
+            "Gold (GLD)": Asset.GOLD,
+            "Silver (SLV)": Asset.SILVER,
+            "Gold Bear (GLL)": Asset.GOLD_BEAR,
+            "Silver Bear (ZSL)": Asset.SILVER_BEAR
+        }
+
+        executed_trades = []
+        for asset_name in trade_assets:
+            asset = asset_map.get(asset_name)
+            if asset:
+                price_col = f"{asset.value}_close"
+                if price_col in df.columns:
+                    consensus, conf, signals = strategy.get_consensus_signal(df, asset)
+                    if consensus != SignalType.HOLD and conf >= confidence_threshold:
+                        from strategies import Signal
+                        signal = Signal(
+                            timestamp=datetime.now(),
+                            asset=asset,
+                            signal_type=consensus,
+                            strategy="AutoTrader",
+                            price=df[price_col].iloc[-1],
+                            confidence=conf,
+                            reason=f"Auto-executed: {len(signals)} strategies agree"
+                        )
+                        trade = engine.execute_signal(signal)
+                        if trade:
+                            executed_trades.append(f"{asset.get_display_name()}: {trade.side} @ ${trade.price:.2f}")
+
+        if executed_trades:
+            st.success(f"Auto-executed {len(executed_trades)} trade(s): " + ", ".join(executed_trades))
+
     # Main content tabs
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "Charts", "Portfolio", "Signals", "Analysis"
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "Charts", "Shadow Trading", "Signals", "Portfolio", "Analysis"
     ])
 
     with tab1:
@@ -687,11 +754,108 @@ def main():
             st.plotly_chart(ratio_chart, use_container_width=True)
 
     with tab2:
-        display_portfolio(engine)
+        # Shadow Trading Tab - Main dashboard for auto-trading
+        st.subheader("Shadow Trading Dashboard")
+
+        # Status indicators
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if auto_trade:
+                st.success("Auto-Trading: ENABLED")
+            else:
+                st.warning("Auto-Trading: DISABLED")
+        with col2:
+            st.metric("Confidence Threshold", f"{confidence_threshold:.0%}")
+        with col3:
+            st.metric("Active Assets", len(trade_assets) if trade_assets else 0)
+
         st.divider()
-        display_trade_history(engine)
+
+        # Portfolio Overview
+        st.subheader("Portfolio Performance")
+        state = engine.get_portfolio_state()
+
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Value", f"${state.total_value:,.2f}",
+                     delta=f"${state.total_pnl:,.2f}")
+        with col2:
+            pnl_pct = (state.total_pnl / INITIAL_CAPITAL) * 100 if INITIAL_CAPITAL > 0 else 0
+            st.metric("Return", f"{pnl_pct:.2f}%")
+        with col3:
+            st.metric("Cash", f"${state.cash:,.2f}")
+        with col4:
+            st.metric("Drawdown", f"${state.drawdown:,.2f}")
+
+        # Current Positions
+        if state.positions:
+            st.subheader("Open Positions")
+            pos_data = []
+            for asset_name, pos in state.positions.items():
+                pos_data.append({
+                    "Asset": asset_name.upper(),
+                    "Quantity": f"{pos.quantity:.4f}",
+                    "Avg Price": f"${pos.avg_price:.2f}",
+                    "Current": f"${pos.current_price:.2f}",
+                    "P&L": f"${pos.unrealized_pnl:.2f}",
+                    "P&L %": f"{pos.unrealized_pnl_pct:.2f}%"
+                })
+            st.dataframe(pos_data, use_container_width=True)
+        else:
+            st.info("No open positions")
+
         st.divider()
-        display_performance(engine)
+
+        # Performance Metrics
+        st.subheader("Trading Performance")
+        perf = engine.get_performance_summary()
+
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Trades", perf['total_trades'])
+        with col2:
+            st.metric("Win Rate", f"{perf['win_rate']:.1f}%")
+        with col3:
+            st.metric("Winning", perf['winning_trades'])
+        with col4:
+            st.metric("Profit Factor", f"{perf['profit_factor']:.2f}")
+
+        # Trade History
+        st.subheader("Recent Trades")
+        trades = engine.get_trade_history(limit=10)
+        if not trades.empty:
+            display_df = trades[['timestamp', 'asset', 'side', 'quantity', 'price', 'pnl']].copy()
+            display_df['timestamp'] = pd.to_datetime(display_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M')
+            display_df['price'] = display_df['price'].apply(lambda x: f"${x:.2f}")
+            display_df['pnl'] = display_df['pnl'].apply(lambda x: f"${x:.2f}")
+            st.dataframe(display_df, use_container_width=True)
+        else:
+            st.info("No trades yet")
+
+        # Equity Curve (if we have trade history)
+        if not trades.empty and len(trades) > 1:
+            st.subheader("Equity Curve")
+            equity_data = trades[['timestamp', 'pnl']].copy()
+            equity_data['cumulative_pnl'] = equity_data['pnl'].cumsum() + INITIAL_CAPITAL
+            equity_data['timestamp'] = pd.to_datetime(equity_data['timestamp'])
+
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=equity_data['timestamp'],
+                y=equity_data['cumulative_pnl'],
+                mode='lines+markers',
+                name='Portfolio Value',
+                line=dict(color='green', width=2)
+            ))
+            fig.add_hline(y=INITIAL_CAPITAL, line_dash="dash", line_color="gray",
+                         annotation_text=f"Initial: ${INITIAL_CAPITAL:,.0f}")
+            fig.update_layout(
+                title="Portfolio Value Over Time",
+                xaxis_title="Date",
+                yaxis_title="Value ($)",
+                height=300
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
     with tab3:
         display_signals(df, strategy)
@@ -699,7 +863,7 @@ def main():
         st.divider()
 
         # Execute signals section
-        st.subheader("Execute Signals")
+        st.subheader("Manual Signal Execution")
 
         col1, col2 = st.columns(2)
 
@@ -754,6 +918,13 @@ def main():
                         st.info("No signal to execute (HOLD)")
 
     with tab4:
+        display_portfolio(engine)
+        st.divider()
+        display_trade_history(engine)
+        st.divider()
+        display_performance(engine)
+
+    with tab5:
         display_analysis(df)
 
     # Footer

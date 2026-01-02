@@ -150,7 +150,7 @@ class ShadowTradingEngine:
         # Initialize database
         self.engine = create_engine(f'sqlite:///{db_path}')
         Base.metadata.create_all(self.engine)
-        self.Session = sessionmaker(bind=self.engine)
+        self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
 
         # Initialize portfolio state
         self._init_portfolio()
@@ -175,12 +175,19 @@ class ShadowTradingEngine:
     def get_position(self, asset: Asset) -> Optional[Position]:
         """Get current position for an asset"""
         with self.Session() as session:
-            return session.query(Position).filter_by(asset=asset.value).first()
+            pos = session.query(Position).filter_by(asset=asset.value).first()
+            if pos:
+                session.expunge(pos)
+            return pos
 
     def get_all_positions(self) -> List[Position]:
         """Get all open positions"""
         with self.Session() as session:
-            return session.query(Position).filter(Position.quantity > 0).all()
+            positions = session.query(Position).filter(Position.quantity > 0).all()
+            # Expunge objects so they remain accessible after session closes
+            for pos in positions:
+                session.expunge(pos)
+            return positions
 
     def get_portfolio_state(self) -> PortfolioState:
         """Get current portfolio state"""
@@ -190,6 +197,7 @@ class ShadowTradingEngine:
         with self.Session() as session:
             for pos in session.query(Position).all():
                 if pos.quantity > 0:
+                    session.expunge(pos)  # Keep accessible after session closes
                     positions[pos.asset] = pos
                     positions_value += pos.quantity * pos.current_price
 

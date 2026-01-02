@@ -198,6 +198,228 @@ class TechnicalIndicators:
 
         return vwap
 
+    def adx(
+        self,
+        high: pd.Series,
+        low: pd.Series,
+        close: pd.Series,
+        period: int = 14
+    ) -> tuple[pd.Series, pd.Series, pd.Series]:
+        """
+        Average Directional Index - measures trend strength
+
+        Returns:
+            Tuple of (ADX, +DI, -DI)
+        """
+        # Calculate True Range
+        prev_close = close.shift(1)
+        tr1 = high - low
+        tr2 = (high - prev_close).abs()
+        tr3 = (low - prev_close).abs()
+        true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+        # Calculate Directional Movement
+        up_move = high - high.shift(1)
+        down_move = low.shift(1) - low
+
+        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
+        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
+
+        plus_dm = pd.Series(plus_dm, index=high.index)
+        minus_dm = pd.Series(minus_dm, index=high.index)
+
+        # Smoothed averages
+        atr = true_range.ewm(span=period, adjust=False).mean()
+        plus_di = 100 * (plus_dm.ewm(span=period, adjust=False).mean() / atr)
+        minus_di = 100 * (minus_dm.ewm(span=period, adjust=False).mean() / atr)
+
+        # ADX
+        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
+        adx = dx.ewm(span=period, adjust=False).mean()
+
+        return adx, plus_di, minus_di
+
+    def mfi(
+        self,
+        high: pd.Series,
+        low: pd.Series,
+        close: pd.Series,
+        volume: pd.Series,
+        period: int = 14
+    ) -> pd.Series:
+        """
+        Money Flow Index - volume-weighted RSI
+
+        MFI = 100 - (100 / (1 + Money Flow Ratio))
+        """
+        typical_price = (high + low + close) / 3
+        raw_money_flow = typical_price * volume
+
+        # Positive and negative money flow
+        price_change = typical_price.diff()
+        positive_flow = np.where(price_change > 0, raw_money_flow, 0)
+        negative_flow = np.where(price_change < 0, raw_money_flow, 0)
+
+        positive_flow = pd.Series(positive_flow, index=close.index)
+        negative_flow = pd.Series(negative_flow, index=close.index)
+
+        # Rolling sums
+        positive_mf = positive_flow.rolling(window=period).sum()
+        negative_mf = negative_flow.rolling(window=period).sum()
+
+        # Money Flow Ratio and MFI
+        mf_ratio = positive_mf / negative_mf
+        mfi = 100 - (100 / (1 + mf_ratio))
+
+        return mfi
+
+    def cci(
+        self,
+        high: pd.Series,
+        low: pd.Series,
+        close: pd.Series,
+        period: int = 20
+    ) -> pd.Series:
+        """
+        Commodity Channel Index - identifies cyclical trends
+
+        CCI = (Typical Price - SMA) / (0.015 * Mean Deviation)
+        """
+        typical_price = (high + low + close) / 3
+        sma = typical_price.rolling(window=period).mean()
+        mean_dev = typical_price.rolling(window=period).apply(
+            lambda x: np.abs(x - x.mean()).mean()
+        )
+        cci = (typical_price - sma) / (0.015 * mean_dev)
+
+        return cci
+
+    def parabolic_sar(
+        self,
+        high: pd.Series,
+        low: pd.Series,
+        af_start: float = 0.02,
+        af_increment: float = 0.02,
+        af_max: float = 0.2
+    ) -> pd.Series:
+        """
+        Parabolic SAR - trend following indicator
+
+        Returns SAR values
+        """
+        length = len(high)
+        sar = pd.Series(index=high.index, dtype=float)
+        trend = pd.Series(index=high.index, dtype=int)
+        af = af_start
+        ep = low.iloc[0]  # Extreme point
+
+        # Initialize
+        sar.iloc[0] = high.iloc[0]
+        trend.iloc[0] = -1  # Start with downtrend
+
+        for i in range(1, length):
+            if trend.iloc[i-1] == 1:  # Uptrend
+                sar.iloc[i] = sar.iloc[i-1] + af * (ep - sar.iloc[i-1])
+                sar.iloc[i] = min(sar.iloc[i], low.iloc[i-1], low.iloc[i-2] if i > 1 else low.iloc[i-1])
+
+                if low.iloc[i] < sar.iloc[i]:
+                    trend.iloc[i] = -1
+                    sar.iloc[i] = ep
+                    ep = low.iloc[i]
+                    af = af_start
+                else:
+                    trend.iloc[i] = 1
+                    if high.iloc[i] > ep:
+                        ep = high.iloc[i]
+                        af = min(af + af_increment, af_max)
+            else:  # Downtrend
+                sar.iloc[i] = sar.iloc[i-1] + af * (ep - sar.iloc[i-1])
+                sar.iloc[i] = max(sar.iloc[i], high.iloc[i-1], high.iloc[i-2] if i > 1 else high.iloc[i-1])
+
+                if high.iloc[i] > sar.iloc[i]:
+                    trend.iloc[i] = 1
+                    sar.iloc[i] = ep
+                    ep = high.iloc[i]
+                    af = af_start
+                else:
+                    trend.iloc[i] = -1
+                    if low.iloc[i] < ep:
+                        ep = low.iloc[i]
+                        af = min(af + af_increment, af_max)
+
+        return sar
+
+    def ichimoku(
+        self,
+        high: pd.Series,
+        low: pd.Series,
+        close: pd.Series,
+        tenkan_period: int = 9,
+        kijun_period: int = 26,
+        senkou_b_period: int = 52
+    ) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]:
+        """
+        Ichimoku Cloud indicator
+
+        Returns:
+            Tuple of (Tenkan-sen, Kijun-sen, Senkou Span A, Senkou Span B, Chikou Span)
+        """
+        # Tenkan-sen (Conversion Line)
+        tenkan = (high.rolling(window=tenkan_period).max() +
+                  low.rolling(window=tenkan_period).min()) / 2
+
+        # Kijun-sen (Base Line)
+        kijun = (high.rolling(window=kijun_period).max() +
+                 low.rolling(window=kijun_period).min()) / 2
+
+        # Senkou Span A (Leading Span A)
+        senkou_a = ((tenkan + kijun) / 2).shift(kijun_period)
+
+        # Senkou Span B (Leading Span B)
+        senkou_b = ((high.rolling(window=senkou_b_period).max() +
+                     low.rolling(window=senkou_b_period).min()) / 2).shift(kijun_period)
+
+        # Chikou Span (Lagging Span)
+        chikou = close.shift(-kijun_period)
+
+        return tenkan, kijun, senkou_a, senkou_b, chikou
+
+    def roc(self, data: pd.Series, period: int = 12) -> pd.Series:
+        """
+        Rate of Change - momentum indicator
+
+        ROC = ((Price - Price n periods ago) / Price n periods ago) * 100
+        """
+        return ((data - data.shift(period)) / data.shift(period)) * 100
+
+    def momentum(self, data: pd.Series, period: int = 10) -> pd.Series:
+        """
+        Momentum indicator
+
+        Momentum = Price - Price n periods ago
+        """
+        return data - data.shift(period)
+
+    def pivot_points(
+        self,
+        high: pd.Series,
+        low: pd.Series,
+        close: pd.Series
+    ) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]:
+        """
+        Calculate Pivot Points and Support/Resistance levels
+
+        Returns:
+            Tuple of (Pivot, R1, R2, S1, S2)
+        """
+        pivot = (high.shift(1) + low.shift(1) + close.shift(1)) / 3
+        r1 = 2 * pivot - low.shift(1)
+        s1 = 2 * pivot - high.shift(1)
+        r2 = pivot + (high.shift(1) - low.shift(1))
+        s2 = pivot - (high.shift(1) - low.shift(1))
+
+        return pivot, r1, r2, s1, s2
+
     def calculate_all(self, df: pd.DataFrame, prefix: str = "") -> pd.DataFrame:
         """
         Calculate all indicators for a DataFrame with OHLCV data
@@ -259,6 +481,38 @@ class TechnicalIndicators:
             volume = result[volume_col]
             result[f'{prefix}obv'] = self.obv(close, volume)
             result[f'{prefix}vwap'] = self.vwap(high, low, close, volume)
+            result[f'{prefix}mfi'] = self.mfi(high, low, close, volume)
+
+        # ADX - Trend Strength
+        adx, plus_di, minus_di = self.adx(high, low, close)
+        result[f'{prefix}adx'] = adx
+        result[f'{prefix}plus_di'] = plus_di
+        result[f'{prefix}minus_di'] = minus_di
+
+        # CCI - Commodity Channel Index
+        result[f'{prefix}cci'] = self.cci(high, low, close)
+
+        # Parabolic SAR
+        result[f'{prefix}psar'] = self.parabolic_sar(high, low)
+
+        # Ichimoku Cloud
+        tenkan, kijun, senkou_a, senkou_b, chikou = self.ichimoku(high, low, close)
+        result[f'{prefix}ichimoku_tenkan'] = tenkan
+        result[f'{prefix}ichimoku_kijun'] = kijun
+        result[f'{prefix}ichimoku_senkou_a'] = senkou_a
+        result[f'{prefix}ichimoku_senkou_b'] = senkou_b
+
+        # Momentum indicators
+        result[f'{prefix}roc'] = self.roc(close)
+        result[f'{prefix}momentum'] = self.momentum(close)
+
+        # Pivot Points
+        pivot, r1, r2, s1, s2 = self.pivot_points(high, low, close)
+        result[f'{prefix}pivot'] = pivot
+        result[f'{prefix}r1'] = r1
+        result[f'{prefix}r2'] = r2
+        result[f'{prefix}s1'] = s1
+        result[f'{prefix}s2'] = s2
 
         return result
 

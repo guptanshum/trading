@@ -1043,6 +1043,452 @@ class GoldSilverRatioStrategy(BaseStrategy):
         )
 
 
+class ADXTrendStrategy(BaseStrategy):
+    """ADX-based Trend Strength Strategy"""
+
+    def __init__(self, adx_threshold: float = 25, asset: Asset = Asset.GOLD):
+        super().__init__("ADX_Trend")
+        self.adx_threshold = adx_threshold
+        self.asset = asset
+
+    def generate_signals(self, df: pd.DataFrame) -> List[Signal]:
+        return []  # Use get_current_signal for live trading
+
+    def get_current_signal(self, df: pd.DataFrame) -> Optional[Signal]:
+        """Get signal based on ADX trend strength and DI crossover"""
+        prefix = f"{self.asset.value}_"
+        adx_col = f"{prefix}adx"
+        plus_di_col = f"{prefix}plus_di"
+        minus_di_col = f"{prefix}minus_di"
+        close_col = f"{prefix}close"
+
+        if adx_col not in df.columns:
+            return None
+
+        row = df.iloc[-1]
+        adx = row[adx_col]
+        plus_di = row[plus_di_col]
+        minus_di = row[minus_di_col]
+        price = row[close_col]
+
+        if pd.isna(adx) or pd.isna(plus_di) or pd.isna(minus_di):
+            return None
+
+        # ADX indicates trend strength, DI crossover indicates direction
+        if adx > self.adx_threshold:
+            # Strong trend
+            if plus_di > minus_di:
+                di_spread = plus_di - minus_di
+                confidence = min(0.5 + (adx - self.adx_threshold) / 50 + di_spread / 100, 0.95)
+                reason = (
+                    f"ADX STRONG UPTREND: ADX={adx:.1f} (>{self.adx_threshold}), "
+                    f"+DI={plus_di:.1f} > -DI={minus_di:.1f}. "
+                    f"Strong bullish trend confirmed. Price: ${price:,.2f}."
+                )
+                signal_type = SignalType.STRONG_BUY if adx > 40 else SignalType.BUY
+            else:
+                di_spread = minus_di - plus_di
+                confidence = min(0.5 + (adx - self.adx_threshold) / 50 + di_spread / 100, 0.95)
+                reason = (
+                    f"ADX STRONG DOWNTREND: ADX={adx:.1f} (>{self.adx_threshold}), "
+                    f"-DI={minus_di:.1f} > +DI={plus_di:.1f}. "
+                    f"Strong bearish trend confirmed. Price: ${price:,.2f}."
+                )
+                signal_type = SignalType.STRONG_SELL if adx > 40 else SignalType.SELL
+        else:
+            # Weak trend - no signal
+            return None
+
+        return Signal(
+            timestamp=df.index[-1] if isinstance(df.index[-1], datetime) else datetime.now(),
+            asset=self.asset,
+            signal_type=signal_type,
+            strategy=self.name,
+            price=price,
+            confidence=confidence,
+            reason=reason,
+            indicators={'adx': adx, 'plus_di': plus_di, 'minus_di': minus_di}
+        )
+
+
+class StochasticStrategy(BaseStrategy):
+    """Stochastic Oscillator Strategy"""
+
+    def __init__(self, overbought: float = 80, oversold: float = 20, asset: Asset = Asset.GOLD):
+        super().__init__("Stochastic")
+        self.overbought = overbought
+        self.oversold = oversold
+        self.asset = asset
+
+    def generate_signals(self, df: pd.DataFrame) -> List[Signal]:
+        return []
+
+    def get_current_signal(self, df: pd.DataFrame) -> Optional[Signal]:
+        """Get signal based on Stochastic %K and %D"""
+        prefix = f"{self.asset.value}_"
+        k_col = f"{prefix}stoch_k"
+        d_col = f"{prefix}stoch_d"
+        close_col = f"{prefix}close"
+
+        if k_col not in df.columns:
+            return None
+
+        row = df.iloc[-1]
+        k = row[k_col]
+        d = row[d_col]
+        price = row[close_col]
+
+        if pd.isna(k) or pd.isna(d):
+            return None
+
+        if k < self.oversold and d < self.oversold:
+            # Oversold - potential buy
+            depth = self.oversold - min(k, d)
+            confidence = min(0.5 + depth / 40, 0.85)
+            reason = (
+                f"STOCHASTIC OVERSOLD: %K={k:.1f}, %D={d:.1f} (both <{self.oversold}). "
+                f"Price: ${price:,.2f}. Potential reversal zone."
+            )
+            signal_type = SignalType.BUY
+        elif k > self.overbought and d > self.overbought:
+            # Overbought - potential sell
+            excess = max(k, d) - self.overbought
+            confidence = min(0.5 + excess / 40, 0.85)
+            reason = (
+                f"STOCHASTIC OVERBOUGHT: %K={k:.1f}, %D={d:.1f} (both >{self.overbought}). "
+                f"Price: ${price:,.2f}. Potential reversal zone."
+            )
+            signal_type = SignalType.SELL
+        elif k > d and k < 50:
+            # %K crossing above %D in lower half - bullish
+            confidence = 0.5
+            reason = f"STOCHASTIC BULLISH CROSS: %K={k:.1f} > %D={d:.1f} in lower zone."
+            signal_type = SignalType.BUY
+        elif k < d and k > 50:
+            # %K crossing below %D in upper half - bearish
+            confidence = 0.5
+            reason = f"STOCHASTIC BEARISH CROSS: %K={k:.1f} < %D={d:.1f} in upper zone."
+            signal_type = SignalType.SELL
+        else:
+            return None
+
+        return Signal(
+            timestamp=df.index[-1] if isinstance(df.index[-1], datetime) else datetime.now(),
+            asset=self.asset,
+            signal_type=signal_type,
+            strategy=self.name,
+            price=price,
+            confidence=confidence,
+            reason=reason,
+            indicators={'stoch_k': k, 'stoch_d': d}
+        )
+
+
+class CCIStrategy(BaseStrategy):
+    """Commodity Channel Index Strategy"""
+
+    def __init__(self, overbought: float = 100, oversold: float = -100, asset: Asset = Asset.GOLD):
+        super().__init__("CCI")
+        self.overbought = overbought
+        self.oversold = oversold
+        self.asset = asset
+
+    def generate_signals(self, df: pd.DataFrame) -> List[Signal]:
+        return []
+
+    def get_current_signal(self, df: pd.DataFrame) -> Optional[Signal]:
+        """Get signal based on CCI levels"""
+        prefix = f"{self.asset.value}_"
+        cci_col = f"{prefix}cci"
+        close_col = f"{prefix}close"
+
+        if cci_col not in df.columns:
+            return None
+
+        row = df.iloc[-1]
+        cci = row[cci_col]
+        price = row[close_col]
+
+        if pd.isna(cci):
+            return None
+
+        if cci < self.oversold:
+            # Oversold
+            depth = abs(cci - self.oversold)
+            confidence = min(0.5 + depth / 200, 0.9)
+            signal_type = SignalType.STRONG_BUY if cci < -200 else SignalType.BUY
+            reason = (
+                f"CCI OVERSOLD: CCI={cci:.1f} (<{self.oversold}). "
+                f"Price: ${price:,.2f}. Potential bullish reversal."
+            )
+        elif cci > self.overbought:
+            # Overbought
+            excess = cci - self.overbought
+            confidence = min(0.5 + excess / 200, 0.9)
+            signal_type = SignalType.STRONG_SELL if cci > 200 else SignalType.SELL
+            reason = (
+                f"CCI OVERBOUGHT: CCI={cci:.1f} (>{self.overbought}). "
+                f"Price: ${price:,.2f}. Potential bearish reversal."
+            )
+        elif cci > 0 and cci < 50:
+            # Mild bullish
+            confidence = 0.4
+            signal_type = SignalType.BUY
+            reason = f"CCI MILD BULLISH: CCI={cci:.1f}. Neutral-positive momentum."
+        elif cci < 0 and cci > -50:
+            # Mild bearish
+            confidence = 0.4
+            signal_type = SignalType.SELL
+            reason = f"CCI MILD BEARISH: CCI={cci:.1f}. Neutral-negative momentum."
+        else:
+            return None
+
+        return Signal(
+            timestamp=df.index[-1] if isinstance(df.index[-1], datetime) else datetime.now(),
+            asset=self.asset,
+            signal_type=signal_type,
+            strategy=self.name,
+            price=price,
+            confidence=confidence,
+            reason=reason,
+            indicators={'cci': cci}
+        )
+
+
+class IchimokuStrategy(BaseStrategy):
+    """Ichimoku Cloud Strategy"""
+
+    def __init__(self, asset: Asset = Asset.GOLD):
+        super().__init__("Ichimoku")
+        self.asset = asset
+
+    def generate_signals(self, df: pd.DataFrame) -> List[Signal]:
+        return []
+
+    def get_current_signal(self, df: pd.DataFrame) -> Optional[Signal]:
+        """Get signal based on Ichimoku Cloud"""
+        prefix = f"{self.asset.value}_"
+        tenkan_col = f"{prefix}ichimoku_tenkan"
+        kijun_col = f"{prefix}ichimoku_kijun"
+        senkou_a_col = f"{prefix}ichimoku_senkou_a"
+        senkou_b_col = f"{prefix}ichimoku_senkou_b"
+        close_col = f"{prefix}close"
+
+        if tenkan_col not in df.columns:
+            return None
+
+        row = df.iloc[-1]
+        tenkan = row[tenkan_col]
+        kijun = row[kijun_col]
+        senkou_a = row[senkou_a_col]
+        senkou_b = row[senkou_b_col]
+        price = row[close_col]
+
+        if pd.isna(tenkan) or pd.isna(kijun):
+            return None
+
+        cloud_top = max(senkou_a, senkou_b) if not pd.isna(senkou_a) and not pd.isna(senkou_b) else None
+        cloud_bottom = min(senkou_a, senkou_b) if not pd.isna(senkou_a) and not pd.isna(senkou_b) else None
+
+        signals_bullish = 0
+        signals_bearish = 0
+
+        # TK Cross
+        if tenkan > kijun:
+            signals_bullish += 1
+        else:
+            signals_bearish += 1
+
+        # Price vs Cloud
+        if cloud_top and cloud_bottom:
+            if price > cloud_top:
+                signals_bullish += 2  # Strong bullish
+            elif price < cloud_bottom:
+                signals_bearish += 2  # Strong bearish
+
+        # Determine signal
+        if signals_bullish > signals_bearish:
+            confidence = min(0.4 + signals_bullish * 0.15, 0.9)
+            if price > cloud_top if cloud_top else price > kijun:
+                signal_type = SignalType.STRONG_BUY
+                reason = (
+                    f"ICHIMOKU BULLISH: Price ${price:,.2f} above cloud. "
+                    f"Tenkan={tenkan:.2f} > Kijun={kijun:.2f}. Strong uptrend."
+                )
+            else:
+                signal_type = SignalType.BUY
+                reason = (
+                    f"ICHIMOKU MILD BULLISH: Tenkan={tenkan:.2f} > Kijun={kijun:.2f}. "
+                    f"Price ${price:,.2f}."
+                )
+        elif signals_bearish > signals_bullish:
+            confidence = min(0.4 + signals_bearish * 0.15, 0.9)
+            if price < cloud_bottom if cloud_bottom else price < kijun:
+                signal_type = SignalType.STRONG_SELL
+                reason = (
+                    f"ICHIMOKU BEARISH: Price ${price:,.2f} below cloud. "
+                    f"Tenkan={tenkan:.2f} < Kijun={kijun:.2f}. Strong downtrend."
+                )
+            else:
+                signal_type = SignalType.SELL
+                reason = (
+                    f"ICHIMOKU MILD BEARISH: Tenkan={tenkan:.2f} < Kijun={kijun:.2f}. "
+                    f"Price ${price:,.2f}."
+                )
+        else:
+            return None
+
+        return Signal(
+            timestamp=df.index[-1] if isinstance(df.index[-1], datetime) else datetime.now(),
+            asset=self.asset,
+            signal_type=signal_type,
+            strategy=self.name,
+            price=price,
+            confidence=confidence,
+            reason=reason,
+            indicators={'tenkan': tenkan, 'kijun': kijun, 'senkou_a': senkou_a, 'senkou_b': senkou_b}
+        )
+
+
+class MFIStrategy(BaseStrategy):
+    """Money Flow Index Strategy"""
+
+    def __init__(self, overbought: float = 80, oversold: float = 20, asset: Asset = Asset.GOLD):
+        super().__init__("MFI")
+        self.overbought = overbought
+        self.oversold = oversold
+        self.asset = asset
+
+    def generate_signals(self, df: pd.DataFrame) -> List[Signal]:
+        return []
+
+    def get_current_signal(self, df: pd.DataFrame) -> Optional[Signal]:
+        """Get signal based on MFI (volume-weighted RSI)"""
+        prefix = f"{self.asset.value}_"
+        mfi_col = f"{prefix}mfi"
+        close_col = f"{prefix}close"
+
+        if mfi_col not in df.columns:
+            return None
+
+        row = df.iloc[-1]
+        mfi = row[mfi_col]
+        price = row[close_col]
+
+        if pd.isna(mfi):
+            return None
+
+        if mfi < self.oversold:
+            depth = self.oversold - mfi
+            confidence = min(0.5 + depth / 40, 0.9)
+            signal_type = SignalType.STRONG_BUY if mfi < 10 else SignalType.BUY
+            reason = (
+                f"MFI OVERSOLD: MFI={mfi:.1f} (<{self.oversold}). "
+                f"Volume confirms selling exhaustion. Price: ${price:,.2f}."
+            )
+        elif mfi > self.overbought:
+            excess = mfi - self.overbought
+            confidence = min(0.5 + excess / 40, 0.9)
+            signal_type = SignalType.STRONG_SELL if mfi > 90 else SignalType.SELL
+            reason = (
+                f"MFI OVERBOUGHT: MFI={mfi:.1f} (>{self.overbought}). "
+                f"Volume confirms buying exhaustion. Price: ${price:,.2f}."
+            )
+        else:
+            return None
+
+        return Signal(
+            timestamp=df.index[-1] if isinstance(df.index[-1], datetime) else datetime.now(),
+            asset=self.asset,
+            signal_type=signal_type,
+            strategy=self.name,
+            price=price,
+            confidence=confidence,
+            reason=reason,
+            indicators={'mfi': mfi}
+        )
+
+
+class PivotPointStrategy(BaseStrategy):
+    """Pivot Point Support/Resistance Strategy"""
+
+    def __init__(self, asset: Asset = Asset.GOLD):
+        super().__init__("PivotPoint")
+        self.asset = asset
+
+    def generate_signals(self, df: pd.DataFrame) -> List[Signal]:
+        return []
+
+    def get_current_signal(self, df: pd.DataFrame) -> Optional[Signal]:
+        """Get signal based on price relative to pivot points"""
+        prefix = f"{self.asset.value}_"
+        pivot_col = f"{prefix}pivot"
+        r1_col = f"{prefix}r1"
+        s1_col = f"{prefix}s1"
+        close_col = f"{prefix}close"
+
+        if pivot_col not in df.columns:
+            return None
+
+        row = df.iloc[-1]
+        pivot = row[pivot_col]
+        r1 = row[r1_col]
+        s1 = row[s1_col]
+        price = row[close_col]
+
+        if pd.isna(pivot) or pd.isna(r1) or pd.isna(s1):
+            return None
+
+        # Calculate price position
+        if price > r1:
+            # Above R1 - strong bullish breakout
+            confidence = 0.7
+            signal_type = SignalType.BUY
+            reason = (
+                f"PIVOT BREAKOUT: Price ${price:,.2f} above R1 (${r1:,.2f}). "
+                f"Pivot: ${pivot:,.2f}. Bullish momentum."
+            )
+        elif price < s1:
+            # Below S1 - strong bearish breakdown
+            confidence = 0.7
+            signal_type = SignalType.SELL
+            reason = (
+                f"PIVOT BREAKDOWN: Price ${price:,.2f} below S1 (${s1:,.2f}). "
+                f"Pivot: ${pivot:,.2f}. Bearish momentum."
+            )
+        elif price > pivot:
+            # Above pivot - mild bullish
+            pct_above = ((price - pivot) / pivot) * 100
+            confidence = min(0.4 + pct_above / 5, 0.6)
+            signal_type = SignalType.BUY
+            reason = (
+                f"ABOVE PIVOT: Price ${price:,.2f} > Pivot ${pivot:,.2f}. "
+                f"R1: ${r1:,.2f}, S1: ${s1:,.2f}. Mild bullish bias."
+            )
+        elif price < pivot:
+            # Below pivot - mild bearish
+            pct_below = ((pivot - price) / pivot) * 100
+            confidence = min(0.4 + pct_below / 5, 0.6)
+            signal_type = SignalType.SELL
+            reason = (
+                f"BELOW PIVOT: Price ${price:,.2f} < Pivot ${pivot:,.2f}. "
+                f"R1: ${r1:,.2f}, S1: ${s1:,.2f}. Mild bearish bias."
+            )
+        else:
+            return None
+
+        return Signal(
+            timestamp=df.index[-1] if isinstance(df.index[-1], datetime) else datetime.now(),
+            asset=self.asset,
+            signal_type=signal_type,
+            strategy=self.name,
+            price=price,
+            confidence=confidence,
+            reason=reason,
+            indicators={'pivot': pivot, 'r1': r1, 's1': s1}
+        )
+
+
 class CompositeStrategy(BaseStrategy):
     """Combines multiple strategies and aggregates signals"""
 
@@ -1255,10 +1701,19 @@ def create_default_strategies() -> CompositeStrategy:
     all_assets = [Asset.GOLD, Asset.SILVER, Asset.GOLD_BEAR, Asset.SILVER_BEAR]
 
     for asset in all_assets:
+        # Core strategies
         composite.add_strategy(MACrossoverStrategy(asset=asset))
         composite.add_strategy(RSIMeanReversionStrategy(asset=asset))
         composite.add_strategy(BollingerBandStrategy(asset=asset))
         composite.add_strategy(MACDStrategy(asset=asset))
+
+        # New advanced strategies
+        composite.add_strategy(ADXTrendStrategy(asset=asset))
+        composite.add_strategy(StochasticStrategy(asset=asset))
+        composite.add_strategy(CCIStrategy(asset=asset))
+        composite.add_strategy(IchimokuStrategy(asset=asset))
+        composite.add_strategy(MFIStrategy(asset=asset))
+        composite.add_strategy(PivotPointStrategy(asset=asset))
 
     # Add ratio strategy (for bull assets only)
     composite.add_strategy(GoldSilverRatioStrategy())
