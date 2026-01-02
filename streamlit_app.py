@@ -9,4 +9,6 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 # Import and run the dashboard
-from dashboard import *
+from dashboard import main
+
+main()
