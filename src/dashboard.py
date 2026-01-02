@@ -54,21 +54,41 @@ def get_strategy():
     return create_default_strategies()
 
 
-@st.cache_data(ttl=60)  # Cache for 60 seconds
+@st.cache_data(ttl=300)  # Cache for 5 minutes to avoid rate limiting
 def fetch_data(period: str = "6mo"):
-    """Fetch and prepare market data"""
-    df = fetch_and_prepare_data(period=period)
-    df = add_indicators_to_data(df)
-    return df
+    """Fetch and prepare market data with retry logic"""
+    import time as retry_time
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            df = fetch_and_prepare_data(period=period)
+            if len(df) > 0:
+                df = add_indicators_to_data(df)
+                return df
+        except Exception as e:
+            if "rate" in str(e).lower() or "429" in str(e):
+                wait_time = (attempt + 1) * 30  # 30s, 60s, 90s backoff
+                logger.warning(f"Rate limited, waiting {wait_time}s before retry...")
+                retry_time.sleep(wait_time)
+            else:
+                raise e
+
+    # Return empty df if all retries failed
+    return pd.DataFrame()
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=300)  # Cache for 5 minutes
 def fetch_intraday_data():
     """Fetch intraday data for day trading"""
     fetcher = DataFetcher()
-    data = fetcher.fetch_intraday(period="5d", interval="1m")
-    combined = fetcher.get_combined_data(data)
-    return add_indicators_to_data(combined) if len(combined) > 0 else combined
+    try:
+        data = fetcher.fetch_intraday(period="5d", interval="1m")
+        combined = fetcher.get_combined_data(data)
+        return add_indicators_to_data(combined) if len(combined) > 0 else combined
+    except Exception as e:
+        logger.error(f"Error fetching intraday data: {e}")
+        return pd.DataFrame()
 
 
 def create_price_chart(df: pd.DataFrame, asset: str, show_indicators: bool = True) -> go.Figure:
@@ -509,8 +529,8 @@ def main():
         # Show indicators
         show_indicators = st.checkbox("Show Indicators", value=True)
 
-        # Auto refresh - enabled by default
-        auto_refresh = st.checkbox("Auto Refresh (60s)", value=True)
+        # Auto refresh - enabled by default (5 min to avoid rate limits)
+        auto_refresh = st.checkbox("Auto Refresh (5 min)", value=True)
 
         st.divider()
 
@@ -543,7 +563,7 @@ def main():
     # Data loaded timestamp - prominent display
     data_time = datetime.now()
     if auto_refresh:
-        st.success(f"Data loaded at {data_time.strftime('%H:%M:%S')} | Auto-refresh enabled (60s)")
+        st.success(f"Data loaded at {data_time.strftime('%H:%M:%S')} | Auto-refresh enabled (5 min)")
     else:
         st.info(f"Data loaded at {data_time.strftime('%H:%M:%S')} | Auto-refresh disabled")
 
@@ -652,9 +672,9 @@ def main():
     st.divider()
     st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-    # Auto refresh
+    # Auto refresh (5 min = 300s to avoid Yahoo Finance rate limits)
     if auto_refresh:
-        time.sleep(DASHBOARD_REFRESH_SECONDS)
+        time.sleep(300)
         st.rerun()
 
 
