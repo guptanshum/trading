@@ -1721,6 +1721,262 @@ def create_default_strategies() -> CompositeStrategy:
     return composite
 
 
+def create_intraday_strategies() -> CompositeStrategy:
+    """
+    Create intraday-focused strategy with faster settings.
+
+    Best strategies for intraday:
+    1. RSI (fast) - Quick overbought/oversold signals
+    2. Stochastic (fast) - Short-term momentum reversals
+    3. MACD - Momentum confirmation
+    4. Bollinger Bands - Volatility breakouts
+    5. Pivot Points - Intraday S/R levels (specifically designed for intraday)
+    """
+    composite = CompositeStrategy()
+
+    all_assets = [Asset.GOLD, Asset.SILVER, Asset.GOLD_BEAR, Asset.SILVER_BEAR]
+
+    for asset in all_assets:
+        # Fast RSI (7-period instead of 14, tighter bands)
+        composite.add_strategy(RSIMeanReversionStrategy(
+            rsi_period=7,
+            overbought=65,  # Tighter than default 70
+            oversold=35,    # Tighter than default 30
+            asset=asset
+        ))
+
+        # Fast Stochastic (5,3,3 instead of 14,3,3)
+        composite.add_strategy(StochasticStrategy(
+            overbought=75,  # Tighter than default 80
+            oversold=25,    # Tighter than default 20
+            asset=asset
+        ))
+
+        # MACD - standard settings work well for intraday
+        composite.add_strategy(MACDStrategy(asset=asset))
+
+        # Bollinger Bands with tighter bands for quicker signals
+        composite.add_strategy(BollingerBandStrategy(
+            period=10,      # Faster than default 20
+            std_dev=1.5,    # Tighter than default 2.0
+            asset=asset
+        ))
+
+        # Pivot Points - best for intraday S/R
+        composite.add_strategy(PivotPointStrategy(asset=asset))
+
+    return composite
+
+
+@dataclass
+class IntradayLevels:
+    """Entry/exit levels for intraday trading"""
+    asset: Asset
+    current_price: float
+    signal: SignalType
+    confidence: float
+
+    # Entry levels
+    entry_price: float
+    entry_reason: str
+
+    # Exit levels
+    target_1: float  # First profit target
+    target_2: float  # Second profit target
+    stop_loss: float
+
+    # Key levels
+    pivot: float
+    r1: float
+    r2: float
+    s1: float
+    s2: float
+
+    # Bollinger levels
+    bb_upper: float
+    bb_lower: float
+    bb_mid: float
+
+    # Risk metrics
+    risk_amount: float  # Distance to stop
+    reward_1: float     # Distance to target 1
+    risk_reward_1: float
+    reward_2: float     # Distance to target 2
+    risk_reward_2: float
+
+
+def calculate_intraday_levels(
+    df: pd.DataFrame,
+    asset: Asset,
+    signal: SignalType,
+    confidence: float
+) -> Optional[IntradayLevels]:
+    """
+    Calculate exact entry/exit levels for intraday trading.
+
+    Uses:
+    - Pivot points for S/R levels
+    - Bollinger Bands for volatility-based targets
+    - ATR for stop-loss distance
+    """
+    prefix = f"{asset.value}_"
+
+    # Required columns
+    close_col = f"{prefix}close"
+    pivot_col = f"{prefix}pivot"
+    r1_col = f"{prefix}r1"
+    r2_col = f"{prefix}r2"
+    s1_col = f"{prefix}s1"
+    s2_col = f"{prefix}s2"
+    bb_upper_col = f"{prefix}bb_upper"
+    bb_lower_col = f"{prefix}bb_lower"
+    bb_mid_col = f"{prefix}bb_mid"
+    atr_col = f"{prefix}atr"
+
+    if close_col not in df.columns:
+        return None
+
+    row = df.iloc[-1]
+    current_price = row[close_col]
+
+    # Get pivot levels (use defaults if not available)
+    pivot = row.get(pivot_col, current_price)
+    r1 = row.get(r1_col, current_price * 1.01)
+    r2 = row.get(r2_col, current_price * 1.02)
+    s1 = row.get(s1_col, current_price * 0.99)
+    s2 = row.get(s2_col, current_price * 0.98)
+
+    # Handle NaN values
+    pivot = current_price if pd.isna(pivot) else pivot
+    r1 = current_price * 1.01 if pd.isna(r1) else r1
+    r2 = current_price * 1.02 if pd.isna(r2) else r2
+    s1 = current_price * 0.99 if pd.isna(s1) else s1
+    s2 = current_price * 0.98 if pd.isna(s2) else s2
+
+    # Get Bollinger Bands
+    bb_upper = row.get(bb_upper_col, current_price * 1.02)
+    bb_lower = row.get(bb_lower_col, current_price * 0.98)
+    bb_mid = row.get(bb_mid_col, current_price)
+
+    bb_upper = current_price * 1.02 if pd.isna(bb_upper) else bb_upper
+    bb_lower = current_price * 0.98 if pd.isna(bb_lower) else bb_lower
+    bb_mid = current_price if pd.isna(bb_mid) else bb_mid
+
+    # Get ATR for stop calculation
+    atr = row.get(atr_col, current_price * 0.01)
+    atr = current_price * 0.01 if pd.isna(atr) else atr
+
+    # Calculate levels based on signal direction
+    if signal in [SignalType.BUY, SignalType.STRONG_BUY]:
+        # LONG position
+        entry_price = current_price
+        entry_reason = "Enter LONG at market"
+
+        # Stop loss: 1.5x ATR below entry or S1, whichever is tighter
+        stop_atr = entry_price - (1.5 * atr)
+        stop_loss = max(stop_atr, s1 - (0.5 * atr))  # Below S1
+
+        # Targets: R1 and R2, or BB upper
+        target_1 = min(r1, bb_upper)  # Conservative first target
+        target_2 = r2 if r2 > target_1 else bb_upper * 1.01
+
+    elif signal in [SignalType.SELL, SignalType.STRONG_SELL]:
+        # SHORT position
+        entry_price = current_price
+        entry_reason = "Enter SHORT at market"
+
+        # Stop loss: 1.5x ATR above entry or R1, whichever is tighter
+        stop_atr = entry_price + (1.5 * atr)
+        stop_loss = min(stop_atr, r1 + (0.5 * atr))  # Above R1
+
+        # Targets: S1 and S2, or BB lower
+        target_1 = max(s1, bb_lower)  # Conservative first target
+        target_2 = s2 if s2 < target_1 else bb_lower * 0.99
+
+    else:
+        # HOLD - no entry
+        return None
+
+    # Calculate risk/reward
+    risk_amount = abs(entry_price - stop_loss)
+    reward_1 = abs(target_1 - entry_price)
+    reward_2 = abs(target_2 - entry_price)
+
+    risk_reward_1 = reward_1 / risk_amount if risk_amount > 0 else 0
+    risk_reward_2 = reward_2 / risk_amount if risk_amount > 0 else 0
+
+    return IntradayLevels(
+        asset=asset,
+        current_price=current_price,
+        signal=signal,
+        confidence=confidence,
+        entry_price=entry_price,
+        entry_reason=entry_reason,
+        target_1=target_1,
+        target_2=target_2,
+        stop_loss=stop_loss,
+        pivot=pivot,
+        r1=r1,
+        r2=r2,
+        s1=s1,
+        s2=s2,
+        bb_upper=bb_upper,
+        bb_lower=bb_lower,
+        bb_mid=bb_mid,
+        risk_amount=risk_amount,
+        reward_1=reward_1,
+        risk_reward_1=risk_reward_1,
+        reward_2=reward_2,
+        risk_reward_2=risk_reward_2
+    )
+
+
+def get_intraday_signals_with_levels(
+    df: pd.DataFrame,
+    strategy: CompositeStrategy = None
+) -> Dict[Asset, Dict]:
+    """
+    Get intraday signals with exact entry/exit levels for all assets.
+
+    Returns dict with:
+    - signal: SignalType
+    - confidence: float
+    - levels: IntradayLevels
+    - strategies_agreeing: list of strategy names
+    """
+    if strategy is None:
+        strategy = create_intraday_strategies()
+
+    results = {}
+
+    for asset in [Asset.GOLD, Asset.SILVER, Asset.GOLD_BEAR, Asset.SILVER_BEAR]:
+        consensus, confidence, signals = strategy.get_consensus_signal(df, asset)
+
+        # Get agreeing strategies
+        buy_strategies = [s.strategy for s in signals if s.signal_type.value > 0]
+        sell_strategies = [s.strategy for s in signals if s.signal_type.value < 0]
+
+        if consensus.value > 0:
+            agreeing = buy_strategies
+        elif consensus.value < 0:
+            agreeing = sell_strategies
+        else:
+            agreeing = []
+
+        # Calculate entry/exit levels
+        levels = calculate_intraday_levels(df, asset, consensus, confidence)
+
+        results[asset] = {
+            'signal': consensus,
+            'confidence': confidence,
+            'levels': levels,
+            'strategies_agreeing': agreeing,
+            'all_signals': signals
+        }
+
+    return results
+
+
 def get_mirrored_signal(bull_signal: SignalType) -> SignalType:
     """
     Get the mirrored signal for bear ETFs.
