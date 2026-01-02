@@ -1814,10 +1814,11 @@ def calculate_intraday_levels(
     """
     Calculate exact entry/exit levels for intraday trading.
 
-    Uses:
-    - Pivot points for S/R levels
-    - Bollinger Bands for volatility-based targets
-    - ATR for stop-loss distance
+    Guarantees:
+    - For LONG: targets > entry > stop_loss
+    - For SHORT: targets < entry < stop_loss
+    - Minimum 1:1 risk/reward ratio
+    - All levels are distinct
     """
     prefix = f"{asset.value}_"
 
@@ -1837,68 +1838,118 @@ def calculate_intraday_levels(
         return None
 
     row = df.iloc[-1]
-    current_price = row[close_col]
+    current_price = float(row[close_col])
 
-    # Get pivot levels (use defaults if not available)
-    pivot = row.get(pivot_col, current_price)
-    r1 = row.get(r1_col, current_price * 1.01)
-    r2 = row.get(r2_col, current_price * 1.02)
-    s1 = row.get(s1_col, current_price * 0.99)
-    s2 = row.get(s2_col, current_price * 0.98)
+    # Get ATR first - this is critical for all calculations
+    atr = row.get(atr_col, current_price * 0.005)
+    atr = float(current_price * 0.005 if pd.isna(atr) else atr)
 
-    # Handle NaN values
-    pivot = current_price if pd.isna(pivot) else pivot
-    r1 = current_price * 1.01 if pd.isna(r1) else r1
-    r2 = current_price * 1.02 if pd.isna(r2) else r2
-    s1 = current_price * 0.99 if pd.isna(s1) else s1
-    s2 = current_price * 0.98 if pd.isna(s2) else s2
+    # Minimum ATR of 0.1% of price to avoid tiny movements
+    atr = max(atr, current_price * 0.001)
+
+    # Get pivot levels
+    pivot = float(row.get(pivot_col, current_price) if not pd.isna(row.get(pivot_col)) else current_price)
+    r1 = float(row.get(r1_col, current_price + atr) if not pd.isna(row.get(r1_col)) else current_price + atr)
+    r2 = float(row.get(r2_col, current_price + 2*atr) if not pd.isna(row.get(r2_col)) else current_price + 2*atr)
+    s1 = float(row.get(s1_col, current_price - atr) if not pd.isna(row.get(s1_col)) else current_price - atr)
+    s2 = float(row.get(s2_col, current_price - 2*atr) if not pd.isna(row.get(s2_col)) else current_price - 2*atr)
 
     # Get Bollinger Bands
-    bb_upper = row.get(bb_upper_col, current_price * 1.02)
-    bb_lower = row.get(bb_lower_col, current_price * 0.98)
-    bb_mid = row.get(bb_mid_col, current_price)
+    bb_upper = float(row.get(bb_upper_col, current_price + 2*atr) if not pd.isna(row.get(bb_upper_col)) else current_price + 2*atr)
+    bb_lower = float(row.get(bb_lower_col, current_price - 2*atr) if not pd.isna(row.get(bb_lower_col)) else current_price - 2*atr)
+    bb_mid = float(row.get(bb_mid_col, current_price) if not pd.isna(row.get(bb_mid_col)) else current_price)
 
-    bb_upper = current_price * 1.02 if pd.isna(bb_upper) else bb_upper
-    bb_lower = current_price * 0.98 if pd.isna(bb_lower) else bb_lower
-    bb_mid = current_price if pd.isna(bb_mid) else bb_mid
-
-    # Get ATR for stop calculation
-    atr = row.get(atr_col, current_price * 0.01)
-    atr = current_price * 0.01 if pd.isna(atr) else atr
-
-    # Calculate levels based on signal direction
     if signal in [SignalType.BUY, SignalType.STRONG_BUY]:
         # LONG position
         entry_price = current_price
         entry_reason = "Enter LONG at market"
 
-        # Stop loss: 1.5x ATR below entry or S1, whichever is tighter
-        stop_atr = entry_price - (1.5 * atr)
-        stop_loss = max(stop_atr, s1 - (0.5 * atr))  # Below S1
+        # Stop loss: 1.5x ATR below entry (guaranteed distance)
+        stop_loss = entry_price - (1.5 * atr)
+        risk_amount = entry_price - stop_loss  # Always positive
 
-        # Targets: R1 and R2, or BB upper
-        target_1 = min(r1, bb_upper)  # Conservative first target
-        target_2 = r2 if r2 > target_1 else bb_upper * 1.01
+        # Find targets ABOVE current price
+        # Collect all resistance levels above entry
+        resistance_levels = []
+        if r1 > entry_price + (0.3 * atr):  # Must be meaningfully above
+            resistance_levels.append(r1)
+        if r2 > entry_price + (0.3 * atr):
+            resistance_levels.append(r2)
+        if bb_upper > entry_price + (0.3 * atr):
+            resistance_levels.append(bb_upper)
+
+        # Sort ascending
+        resistance_levels = sorted(resistance_levels)
+
+        # Target 1: First resistance above entry, or 1x ATR (minimum 1:1 R:R)
+        if resistance_levels:
+            target_1 = resistance_levels[0]
+        else:
+            target_1 = entry_price + (1.0 * atr)  # Fallback: 1x ATR = 1:1.5 R:R
+
+        # Ensure minimum R:R of 1:1
+        min_target_1 = entry_price + risk_amount
+        target_1 = max(target_1, min_target_1)
+
+        # Target 2: Second resistance above entry, or 2x ATR
+        if len(resistance_levels) >= 2:
+            target_2 = resistance_levels[1]
+        elif len(resistance_levels) == 1:
+            target_2 = target_1 + (1.0 * atr)
+        else:
+            target_2 = entry_price + (2.0 * atr)
+
+        # Ensure target_2 > target_1
+        target_2 = max(target_2, target_1 + (0.5 * atr))
 
     elif signal in [SignalType.SELL, SignalType.STRONG_SELL]:
         # SHORT position
         entry_price = current_price
         entry_reason = "Enter SHORT at market"
 
-        # Stop loss: 1.5x ATR above entry or R1, whichever is tighter
-        stop_atr = entry_price + (1.5 * atr)
-        stop_loss = min(stop_atr, r1 + (0.5 * atr))  # Above R1
+        # Stop loss: 1.5x ATR above entry (guaranteed distance)
+        stop_loss = entry_price + (1.5 * atr)
+        risk_amount = stop_loss - entry_price  # Always positive
 
-        # Targets: S1 and S2, or BB lower
-        target_1 = max(s1, bb_lower)  # Conservative first target
-        target_2 = s2 if s2 < target_1 else bb_lower * 0.99
+        # Find targets BELOW current price
+        # Collect all support levels below entry
+        support_levels = []
+        if s1 < entry_price - (0.3 * atr):  # Must be meaningfully below
+            support_levels.append(s1)
+        if s2 < entry_price - (0.3 * atr):
+            support_levels.append(s2)
+        if bb_lower < entry_price - (0.3 * atr):
+            support_levels.append(bb_lower)
+
+        # Sort descending (nearest first)
+        support_levels = sorted(support_levels, reverse=True)
+
+        # Target 1: First support below entry, or 1x ATR down
+        if support_levels:
+            target_1 = support_levels[0]
+        else:
+            target_1 = entry_price - (1.0 * atr)
+
+        # Ensure minimum R:R of 1:1
+        max_target_1 = entry_price - risk_amount
+        target_1 = min(target_1, max_target_1)
+
+        # Target 2: Second support below entry
+        if len(support_levels) >= 2:
+            target_2 = support_levels[1]
+        elif len(support_levels) == 1:
+            target_2 = target_1 - (1.0 * atr)
+        else:
+            target_2 = entry_price - (2.0 * atr)
+
+        # Ensure target_2 < target_1
+        target_2 = min(target_2, target_1 - (0.5 * atr))
 
     else:
         # HOLD - no entry
         return None
 
     # Calculate risk/reward
-    risk_amount = abs(entry_price - stop_loss)
     reward_1 = abs(target_1 - entry_price)
     reward_2 = abs(target_2 - entry_price)
 
@@ -1907,27 +1958,27 @@ def calculate_intraday_levels(
 
     return IntradayLevels(
         asset=asset,
-        current_price=current_price,
+        current_price=round(current_price, 2),
         signal=signal,
         confidence=confidence,
-        entry_price=entry_price,
+        entry_price=round(entry_price, 2),
         entry_reason=entry_reason,
-        target_1=target_1,
-        target_2=target_2,
-        stop_loss=stop_loss,
-        pivot=pivot,
-        r1=r1,
-        r2=r2,
-        s1=s1,
-        s2=s2,
-        bb_upper=bb_upper,
-        bb_lower=bb_lower,
-        bb_mid=bb_mid,
-        risk_amount=risk_amount,
-        reward_1=reward_1,
-        risk_reward_1=risk_reward_1,
-        reward_2=reward_2,
-        risk_reward_2=risk_reward_2
+        target_1=round(target_1, 2),
+        target_2=round(target_2, 2),
+        stop_loss=round(stop_loss, 2),
+        pivot=round(pivot, 2),
+        r1=round(r1, 2),
+        r2=round(r2, 2),
+        s1=round(s1, 2),
+        s2=round(s2, 2),
+        bb_upper=round(bb_upper, 2),
+        bb_lower=round(bb_lower, 2),
+        bb_mid=round(bb_mid, 2),
+        risk_amount=round(risk_amount, 2),
+        reward_1=round(reward_1, 2),
+        risk_reward_1=round(risk_reward_1, 2),
+        reward_2=round(reward_2, 2),
+        risk_reward_2=round(risk_reward_2, 2)
     )
 
 
