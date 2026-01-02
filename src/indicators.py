@@ -265,23 +265,29 @@ class TechnicalIndicators:
 
 def add_indicators_to_data(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Convenience function to add all indicators to combined gold/silver data
+    Convenience function to add all indicators to combined ETF data
 
     Args:
-        df: DataFrame with gold_* and silver_* columns
+        df: DataFrame with gold_*, silver_*, gold_bear_*, silver_bear_* columns
 
     Returns:
-        DataFrame with indicators added for both assets
+        DataFrame with indicators added for all assets
     """
     indicators = TechnicalIndicators()
 
-    # Add indicators for gold
+    # Bull ETFs
     if 'gold_close' in df.columns:
         df = indicators.calculate_all(df, prefix='gold_')
 
-    # Add indicators for silver
     if 'silver_close' in df.columns:
         df = indicators.calculate_all(df, prefix='silver_')
+
+    # Bear ETFs
+    if 'gold_bear_close' in df.columns:
+        df = indicators.calculate_all(df, prefix='gold_bear_')
+
+    if 'silver_bear_close' in df.columns:
+        df = indicators.calculate_all(df, prefix='silver_bear_')
 
     return df
 

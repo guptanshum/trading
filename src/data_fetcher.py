@@ -1,15 +1,18 @@
 """
 Data fetcher module for Gold & Silver ETF data from Yahoo Finance
+Supports both bull (long) and bear (inverse) ETFs
 """
 import logging
 from datetime import datetime, timedelta
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 import pandas as pd
 import yfinance as yf
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import time
 
 from config import (
     GOLD_TICKER, SILVER_TICKER,
+    GOLD_BEAR_TICKER, SILVER_BEAR_TICKER,
     HISTORICAL_PERIOD, INTRADAY_PERIOD,
     INTRADAY_INTERVAL, DAILY_INTERVAL
 )
@@ -19,10 +22,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class MarketData:
-    """Container for market data"""
+    """Container for market data - supports both bull and bear ETFs"""
     gold: pd.DataFrame
     silver: pd.DataFrame
-    timestamp: datetime
+    gold_bear: pd.DataFrame = field(default_factory=pd.DataFrame)
+    silver_bear: pd.DataFrame = field(default_factory=pd.DataFrame)
+    timestamp: datetime = field(default_factory=datetime.now)
 
 
 class DataFetcher:
@@ -31,53 +36,78 @@ class DataFetcher:
     def __init__(
         self,
         gold_ticker: str = GOLD_TICKER,
-        silver_ticker: str = SILVER_TICKER
+        silver_ticker: str = SILVER_TICKER,
+        gold_bear_ticker: str = GOLD_BEAR_TICKER,
+        silver_bear_ticker: str = SILVER_BEAR_TICKER,
+        include_bear: bool = True
     ):
         self.gold_ticker = gold_ticker
         self.silver_ticker = silver_ticker
-        self._gold_info: Optional[dict] = None
-        self._silver_info: Optional[dict] = None
+        self.gold_bear_ticker = gold_bear_ticker
+        self.silver_bear_ticker = silver_bear_ticker
+        self.include_bear = include_bear
+        self._ticker_info_cache: Dict[str, dict] = {}
+
+    def _fetch_ticker_data(
+        self,
+        ticker: str,
+        period: str,
+        interval: str
+    ) -> pd.DataFrame:
+        """Fetch data for a single ticker with rate limit handling"""
+        try:
+            data = yf.download(
+                ticker,
+                period=period,
+                interval=interval,
+                progress=False
+            )
+            return self._flatten_columns(data)
+        except Exception as e:
+            logger.warning(f"Failed to fetch {ticker}: {e}")
+            return pd.DataFrame()
 
     def fetch_historical_daily(
         self,
         period: str = HISTORICAL_PERIOD
     ) -> MarketData:
         """
-        Fetch historical daily data for both ETFs
+        Fetch historical daily data for all ETFs (bull and bear)
 
         Args:
             period: Time period (e.g., '1y', '2y', '5y', 'max')
 
         Returns:
-            MarketData with daily OHLCV data
+            MarketData with daily OHLCV data for all assets
         """
-        logger.info(f"Fetching {period} historical daily data...")
+        logger.info(f"Fetching {period} historical daily data for all ETFs...")
 
-        gold_data = yf.download(
-            self.gold_ticker,
-            period=period,
-            interval=DAILY_INTERVAL,
-            progress=False
-        )
+        # Fetch bull ETFs
+        gold_data = self._fetch_ticker_data(self.gold_ticker, period, DAILY_INTERVAL)
+        time.sleep(0.5)  # Small delay to avoid rate limiting
 
-        silver_data = yf.download(
-            self.silver_ticker,
-            period=period,
-            interval=DAILY_INTERVAL,
-            progress=False
-        )
+        silver_data = self._fetch_ticker_data(self.silver_ticker, period, DAILY_INTERVAL)
 
-        # Flatten multi-index columns if present
-        gold_data = self._flatten_columns(gold_data)
-        silver_data = self._flatten_columns(silver_data)
+        # Fetch bear ETFs if enabled
+        gold_bear_data = pd.DataFrame()
+        silver_bear_data = pd.DataFrame()
+
+        if self.include_bear:
+            time.sleep(0.5)
+            gold_bear_data = self._fetch_ticker_data(self.gold_bear_ticker, period, DAILY_INTERVAL)
+            time.sleep(0.5)
+            silver_bear_data = self._fetch_ticker_data(self.silver_bear_ticker, period, DAILY_INTERVAL)
 
         logger.info(
-            f"Fetched {len(gold_data)} gold and {len(silver_data)} silver daily bars"
+            f"Fetched: Gold={len(gold_data)}, Silver={len(silver_data)}, "
+            f"GoldBear={len(gold_bear_data)}, SilverBear={len(silver_bear_data)} bars"
         )
 
         return MarketData(
             gold=gold_data,
             silver=silver_data,
+            gold_bear=gold_bear_data,
+            silver_bear=silver_bear_data,
             timestamp=datetime.now()
         )
 
@@ -94,52 +124,56 @@ class DataFetcher:
             interval: Candle interval (e.g., '1m', '5m', '15m')
 
         Returns:
-            MarketData with intraday OHLCV data
+            MarketData with intraday OHLCV data for all assets
         """
         logger.info(f"Fetching {period} intraday data at {interval} interval...")
 
-        gold_data = yf.download(
-            self.gold_ticker,
-            period=period,
-            interval=interval,
-            progress=False
-        )
+        gold_data = self._fetch_ticker_data(self.gold_ticker, period, interval)
+        time.sleep(0.3)
+        silver_data = self._fetch_ticker_data(self.silver_ticker, period, interval)
 
-        silver_data = yf.download(
-            self.silver_ticker,
-            period=period,
-            interval=interval,
-            progress=False
-        )
+        gold_bear_data = pd.DataFrame()
+        silver_bear_data = pd.DataFrame()
 
-        # Flatten multi-index columns if present
-        gold_data = self._flatten_columns(gold_data)
-        silver_data = self._flatten_columns(silver_data)
+        if self.include_bear:
+            time.sleep(0.3)
+            gold_bear_data = self._fetch_ticker_data(self.gold_bear_ticker, period, interval)
+            time.sleep(0.3)
+            silver_bear_data = self._fetch_ticker_data(self.silver_bear_ticker, period, interval)
 
         logger.info(
-            f"Fetched {len(gold_data)} gold and {len(silver_data)} silver intraday bars"
+            f"Fetched intraday: Gold={len(gold_data)}, Silver={len(silver_data)}, "
+            f"GoldBear={len(gold_bear_data)}, SilverBear={len(silver_bear_data)} bars"
         )
 
         return MarketData(
             gold=gold_data,
             silver=silver_data,
+            gold_bear=gold_bear_data,
+            silver_bear=silver_bear_data,
             timestamp=datetime.now()
         )
 
-    def fetch_latest_price(self) -> Tuple[float, float]:
+    def fetch_latest_price(self) -> Dict[str, float]:
         """
-        Fetch the latest prices for both ETFs
+        Fetch the latest prices for all ETFs
 
         Returns:
-            Tuple of (gold_price, silver_price)
+            Dict with prices for all assets
         """
-        gold = yf.Ticker(self.gold_ticker)
-        silver = yf.Ticker(self.silver_ticker)
+        prices = {}
 
-        gold_price = gold.info.get('regularMarketPrice', 0)
-        silver_price = silver.info.get('regularMarketPrice', 0)
+        try:
+            prices['gold'] = yf.Ticker(self.gold_ticker).info.get('regularMarketPrice', 0)
+            prices['silver'] = yf.Ticker(self.silver_ticker).info.get('regularMarketPrice', 0)
 
-        return gold_price, silver_price
+            if self.include_bear:
+                prices['gold_bear'] = yf.Ticker(self.gold_bear_ticker).info.get('regularMarketPrice', 0)
+                prices['silver_bear'] = yf.Ticker(self.silver_bear_ticker).info.get('regularMarketPrice', 0)
+        except Exception as e:
+            logger.warning(f"Error fetching latest prices: {e}")
+
+        return prices
 
     def fetch_live_data(self) -> MarketData:
         """
@@ -151,20 +185,30 @@ class DataFetcher:
         return self.fetch_intraday(period="1d", interval="1m")
 
     def get_ticker_info(self, ticker: str) -> dict:
-        """Get detailed info about a ticker"""
-        return yf.Ticker(ticker).info
+        """Get detailed info about a ticker (cached)"""
+        if ticker not in self._ticker_info_cache:
+            try:
+                self._ticker_info_cache[ticker] = yf.Ticker(ticker).info
+            except Exception as e:
+                logger.warning(f"Failed to get info for {ticker}: {e}")
+                self._ticker_info_cache[ticker] = {}
+        return self._ticker_info_cache[ticker]
 
     def get_gold_info(self) -> dict:
         """Get cached gold ETF info"""
-        if self._gold_info is None:
-            self._gold_info = self.get_ticker_info(self.gold_ticker)
-        return self._gold_info
+        return self.get_ticker_info(self.gold_ticker)
 
     def get_silver_info(self) -> dict:
         """Get cached silver ETF info"""
-        if self._silver_info is None:
-            self._silver_info = self.get_ticker_info(self.silver_ticker)
-        return self._silver_info
+        return self.get_ticker_info(self.silver_ticker)
+
+    def get_gold_bear_info(self) -> dict:
+        """Get cached gold bear ETF info"""
+        return self.get_ticker_info(self.gold_bear_ticker)
+
+    def get_silver_bear_info(self) -> dict:
+        """Get cached silver bear ETF info"""
+        return self.get_ticker_info(self.silver_bear_ticker)
 
     @staticmethod
     def _flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -201,27 +245,54 @@ class DataFetcher:
 
     def get_combined_data(self, data: MarketData) -> pd.DataFrame:
         """
-        Combine gold and silver data into a single DataFrame
+        Combine all ETF data into a single DataFrame
 
         Args:
             data: MarketData object
 
         Returns:
-            DataFrame with prefixed columns (gold_*, silver_*)
+            DataFrame with prefixed columns (gold_*, silver_*, gold_bear_*, silver_bear_*)
         """
-        gold_df = data.gold.copy()
-        silver_df = data.silver.copy()
+        dfs_to_combine = []
 
-        # Rename columns with prefixes
-        gold_df.columns = [f'gold_{col.lower()}' for col in gold_df.columns]
-        silver_df.columns = [f'silver_{col.lower()}' for col in silver_df.columns]
+        # Bull ETFs
+        if len(data.gold) > 0:
+            gold_df = data.gold.copy()
+            gold_df.columns = [f'gold_{col.lower()}' for col in gold_df.columns]
+            dfs_to_combine.append(gold_df)
+
+        if len(data.silver) > 0:
+            silver_df = data.silver.copy()
+            silver_df.columns = [f'silver_{col.lower()}' for col in silver_df.columns]
+            dfs_to_combine.append(silver_df)
+
+        # Bear ETFs
+        if len(data.gold_bear) > 0:
+            gold_bear_df = data.gold_bear.copy()
+            gold_bear_df.columns = [f'gold_bear_{col.lower()}' for col in gold_bear_df.columns]
+            dfs_to_combine.append(gold_bear_df)
+
+        if len(data.silver_bear) > 0:
+            silver_bear_df = data.silver_bear.copy()
+            silver_bear_df.columns = [f'silver_bear_{col.lower()}' for col in silver_bear_df.columns]
+            dfs_to_combine.append(silver_bear_df)
+
+        if not dfs_to_combine:
+            return pd.DataFrame()
 
         # Combine on index
-        combined = pd.concat([gold_df, silver_df], axis=1)
+        combined = pd.concat(dfs_to_combine, axis=1)
 
-        # Calculate ratio
+        # Calculate ratios
         if 'gold_close' in combined.columns and 'silver_close' in combined.columns:
             combined['gs_ratio'] = combined['gold_close'] / combined['silver_close']
+
+        # Calculate bull vs bear ratios (useful for divergence analysis)
+        if 'gold_close' in combined.columns and 'gold_bear_close' in combined.columns:
+            combined['gold_bull_bear_ratio'] = combined['gold_close'] / combined['gold_bear_close']
+
+        if 'silver_close' in combined.columns and 'silver_bear_close' in combined.columns:
+            combined['silver_bull_bear_ratio'] = combined['silver_close'] / combined['silver_bear_close']
 
         return combined.dropna()
 
@@ -229,7 +300,10 @@ class DataFetcher:
 def fetch_and_prepare_data(
     gold_ticker: str = GOLD_TICKER,
     silver_ticker: str = SILVER_TICKER,
-    period: str = HISTORICAL_PERIOD
+    gold_bear_ticker: str = GOLD_BEAR_TICKER,
+    silver_bear_ticker: str = SILVER_BEAR_TICKER,
+    period: str = HISTORICAL_PERIOD,
+    include_bear: bool = True
 ) -> pd.DataFrame:
     """
     Convenience function to fetch and prepare data for analysis
@@ -237,12 +311,21 @@ def fetch_and_prepare_data(
     Args:
         gold_ticker: Gold ETF ticker symbol
         silver_ticker: Silver ETF ticker symbol
+        gold_bear_ticker: Gold bear ETF ticker symbol
+        silver_bear_ticker: Silver bear ETF ticker symbol
         period: Historical period to fetch
+        include_bear: Whether to include bear ETFs
 
     Returns:
-        Combined DataFrame ready for analysis
+        Combined DataFrame ready for analysis with all assets
     """
-    fetcher = DataFetcher(gold_ticker, silver_ticker)
+    fetcher = DataFetcher(
+        gold_ticker=gold_ticker,
+        silver_ticker=silver_ticker,
+        gold_bear_ticker=gold_bear_ticker,
+        silver_bear_ticker=silver_bear_ticker,
+        include_bear=include_bear
+    )
     data = fetcher.fetch_historical_daily(period)
     return fetcher.get_combined_data(data)
 

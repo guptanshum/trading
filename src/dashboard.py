@@ -24,7 +24,8 @@ from indicators import TechnicalIndicators, add_indicators_to_data
 from analysis import StatisticalAnalysis, analyze_market_data
 from strategies import (
     create_default_strategies, Asset, SignalType,
-    CompositeStrategy, generate_signal_context, Signal
+    CompositeStrategy, generate_signal_context, Signal,
+    get_mirrored_signal
 )
 from trading_engine import ShadowTradingEngine
 
@@ -343,16 +344,41 @@ def display_signal_card(
 
 
 def display_signals(df: pd.DataFrame, strategy: CompositeStrategy):
-    """Display current trading signals with comprehensive analysis"""
+    """Display current trading signals with comprehensive analysis for all assets"""
     st.subheader("Trading Signals")
 
     # Last updated timestamp
     st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
+    # Bull ETFs Section
+    st.markdown("### Bull ETFs (Long)")
     col1, col2 = st.columns(2)
+
+    bull_signals = {}  # Store bull signals for mirror display
 
     for asset, col in [(Asset.GOLD, col1), (Asset.SILVER, col2)]:
         with col:
+            consensus, confidence, signals = strategy.get_consensus_signal(df, asset)
+            bull_signals[asset] = (consensus, confidence)
+
+            # Generate comprehensive context
+            context = generate_signal_context(df, asset, signals)
+
+            # Display the rich signal card
+            display_signal_card(asset, consensus, confidence, signals, context)
+
+    # Bear ETFs Section
+    st.markdown("---")
+    st.markdown("### Bear ETFs (2x Inverse)")
+
+    col3, col4 = st.columns(2)
+
+    for asset, col, bull_asset in [
+        (Asset.GOLD_BEAR, col3, Asset.GOLD),
+        (Asset.SILVER_BEAR, col4, Asset.SILVER)
+    ]:
+        with col:
+            # Get independent analysis for bear ETF
             consensus, confidence, signals = strategy.get_consensus_signal(df, asset)
 
             # Generate comprehensive context
@@ -360,6 +386,18 @@ def display_signals(df: pd.DataFrame, strategy: CompositeStrategy):
 
             # Display the rich signal card
             display_signal_card(asset, consensus, confidence, signals, context)
+
+            # Show mirrored signal from bull ETF
+            bull_consensus, bull_confidence = bull_signals.get(bull_asset, (SignalType.HOLD, 0))
+            mirrored = get_mirrored_signal(bull_consensus)
+
+            mirror_color = "green" if mirrored.value > 0 else "red" if mirrored.value < 0 else "gray"
+            st.markdown(f"""
+            <div style="background: rgba(100,100,100,0.1); padding: 10px; border-radius: 5px; margin-top: 10px;">
+                <strong>Mirrored Signal:</strong> {bull_asset.get_display_name()} is {bull_consensus.name}
+                → Consider <span style="color: {mirror_color}; font-weight: bold;">{mirrored.name}</span> on {asset.get_display_name()}
+            </div>
+            """, unsafe_allow_html=True)
 
 
 def display_portfolio(engine: ShadowTradingEngine):
@@ -584,7 +622,8 @@ def main():
     ])
 
     with tab1:
-        # Price charts
+        # Bull ETF Charts
+        st.markdown("### Bull ETFs (Long)")
         col1, col2 = st.columns(2)
 
         with col1:
@@ -598,6 +637,30 @@ def main():
                 create_price_chart(df, "silver", show_indicators),
                 use_container_width=True
             )
+
+        # Bear ETF Charts (if data available)
+        if 'gold_bear_close' in df.columns or 'silver_bear_close' in df.columns:
+            st.markdown("---")
+            st.markdown("### Bear ETFs (2x Inverse)")
+            col3, col4 = st.columns(2)
+
+            with col3:
+                if 'gold_bear_close' in df.columns:
+                    st.plotly_chart(
+                        create_price_chart(df, "gold_bear", show_indicators),
+                        use_container_width=True
+                    )
+                else:
+                    st.info("Gold Bear (GLL) data not available")
+
+            with col4:
+                if 'silver_bear_close' in df.columns:
+                    st.plotly_chart(
+                        create_price_chart(df, "silver_bear", show_indicators),
+                        use_container_width=True
+                    )
+                else:
+                    st.info("Silver Bear (ZSL) data not available")
 
         # Ratio chart
         ratio_chart = create_ratio_chart(df)

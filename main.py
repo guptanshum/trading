@@ -99,9 +99,21 @@ def run_analysis():
     print("\n--- Trading Signals ---")
     strategy = create_default_strategies()
 
+    # Bull ETFs
+    print("\n[BULL ETFs]")
     for asset in [Asset.GOLD, Asset.SILVER]:
         consensus, confidence, signals = strategy.get_consensus_signal(df, asset)
-        print(f"\n{asset.value.upper()}:")
+        print(f"\n{asset.get_display_name()}:")
+        print(f"  Signal: {consensus.name}")
+        print(f"  Confidence: {confidence:.0%}")
+        if signals:
+            print(f"  Contributing strategies: {len(signals)}")
+
+    # Bear ETFs
+    print("\n[BEAR ETFs]")
+    for asset in [Asset.GOLD_BEAR, Asset.SILVER_BEAR]:
+        consensus, confidence, signals = strategy.get_consensus_signal(df, asset)
+        print(f"\n{asset.get_display_name()}:")
         print(f"  Signal: {consensus.name}")
         print(f"  Confidence: {confidence:.0%}")
         if signals:
@@ -109,12 +121,13 @@ def run_analysis():
 
     # Technical indicators
     print("\n--- Technical Indicators ---")
-    for asset in ['gold', 'silver']:
-        print(f"\n{asset.upper()}:")
-        last = df.iloc[-1]
-        print(f"  RSI: {last[f'{asset}_rsi']:.1f}")
-        print(f"  MACD: {last[f'{asset}_macd']:.3f}")
-        print(f"  BB Width: {last[f'{asset}_bb_width']:.3f}")
+    for asset in ['gold', 'silver', 'gold_bear', 'silver_bear']:
+        if f'{asset}_rsi' in df.columns:
+            print(f"\n{asset.upper().replace('_', ' ')}:")
+            last = df.iloc[-1]
+            print(f"  RSI: {last[f'{asset}_rsi']:.1f}")
+            print(f"  MACD: {last[f'{asset}_macd']:.3f}")
+            print(f"  BB Width: {last[f'{asset}_bb_width']:.3f}")
 
     print("\n" + "=" * 60)
 
@@ -156,27 +169,32 @@ def run_shadow_trading():
                     continue
 
                 # Get current prices
-                gold_price = df['gold_close'].iloc[-1]
-                silver_price = df['silver_close'].iloc[-1]
+                prices = {}
+                prices['gold'] = df['gold_close'].iloc[-1] if 'gold_close' in df.columns else 0
+                prices['silver'] = df['silver_close'].iloc[-1] if 'silver_close' in df.columns else 0
+                prices['gold_bear'] = df['gold_bear_close'].iloc[-1] if 'gold_bear_close' in df.columns else 0
+                prices['silver_bear'] = df['silver_bear_close'].iloc[-1] if 'silver_bear_close' in df.columns else 0
 
-                print(f"Gold: ${gold_price:.2f} | Silver: ${silver_price:.2f}")
+                print(f"Gold: ${prices['gold']:.2f} | Silver: ${prices['silver']:.2f} | "
+                      f"GLL: ${prices['gold_bear']:.2f} | ZSL: ${prices['silver_bear']:.2f}")
 
-                # Update engine prices
-                engine.update_prices(gold_price, silver_price)
+                # Update engine prices (bull ETFs only for now)
+                engine.update_prices(prices['gold'], prices['silver'])
 
                 # Get portfolio state
                 state = engine.get_portfolio_state()
                 print(f"Portfolio: ${state.total_value:,.2f} (P&L: ${state.total_pnl:,.2f})")
 
-                # Generate and execute signals
-                for asset in [Asset.GOLD, Asset.SILVER]:
+                # Generate and execute signals for all assets
+                all_assets = [Asset.GOLD, Asset.SILVER, Asset.GOLD_BEAR, Asset.SILVER_BEAR]
+                for asset in all_assets:
                     consensus, confidence, _ = strategy.get_consensus_signal(df, asset)
 
                     if consensus not in [SignalType.HOLD]:
-                        print(f"  {asset.value}: {consensus.name} ({confidence:.0%})")
+                        print(f"  {asset.get_display_name()}: {consensus.name} ({confidence:.0%})")
 
                         # Create signal
-                        price = gold_price if asset == Asset.GOLD else silver_price
+                        price = prices.get(asset.value, 0)
                         from strategies import Signal
                         signal = Signal(
                             timestamp=datetime.now(),

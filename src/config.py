@@ -5,13 +5,25 @@ from dataclasses import dataclass, field
 from typing import Optional
 import os
 
-# ETF Tickers
+# Bull ETF Tickers (Long)
 GOLD_TICKER = "GLD"  # SPDR Gold Shares
-SILVER_TICKER = "SIVR"  # abrdn Physical Silver Shares ETF
+SILVER_TICKER = "SLV"  # iShares Silver Trust
+
+# Bear ETF Tickers (2x Inverse)
+GOLD_BEAR_TICKER = "GLL"  # ProShares UltraShort Gold
+SILVER_BEAR_TICKER = "ZSL"  # ProShares UltraShort Silver
 
 # Alternative tickers if needed
 ALT_GOLD_TICKERS = ["IAU", "GLDM", "SGOL"]
-ALT_SILVER_TICKERS = ["SLV", "PSLV"]
+ALT_SILVER_TICKERS = ["SIVR", "PSLV"]
+
+# All tickers for batch fetching
+ALL_TICKERS = {
+    "gold": GOLD_TICKER,
+    "silver": SILVER_TICKER,
+    "gold_bear": GOLD_BEAR_TICKER,
+    "silver_bear": SILVER_BEAR_TICKER
+}
 
 # Data settings
 HISTORICAL_PERIOD = "2y"  # 2 years of historical data

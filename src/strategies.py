@@ -25,6 +25,36 @@ class Asset(Enum):
     """Tradeable assets"""
     GOLD = "gold"
     SILVER = "silver"
+    GOLD_BEAR = "gold_bear"      # GLL - 2x Inverse Gold
+    SILVER_BEAR = "silver_bear"  # ZSL - 2x Inverse Silver
+
+    def is_bear(self) -> bool:
+        """Check if this is a bear/inverse ETF"""
+        return self in [Asset.GOLD_BEAR, Asset.SILVER_BEAR]
+
+    def is_bull(self) -> bool:
+        """Check if this is a bull/long ETF"""
+        return self in [Asset.GOLD, Asset.SILVER]
+
+    def get_inverse(self) -> 'Asset':
+        """Get the inverse asset (bull->bear or bear->bull)"""
+        mapping = {
+            Asset.GOLD: Asset.GOLD_BEAR,
+            Asset.SILVER: Asset.SILVER_BEAR,
+            Asset.GOLD_BEAR: Asset.GOLD,
+            Asset.SILVER_BEAR: Asset.SILVER
+        }
+        return mapping.get(self, self)
+
+    def get_display_name(self) -> str:
+        """Get human-readable display name"""
+        names = {
+            Asset.GOLD: "Gold (GLD)",
+            Asset.SILVER: "Silver (SLV)",
+            Asset.GOLD_BEAR: "Gold Bear (GLL)",
+            Asset.SILVER_BEAR: "Silver Bear (ZSL)"
+        }
+        return names.get(self, self.value)
 
 
 @dataclass
@@ -805,17 +835,34 @@ def create_default_strategies() -> CompositeStrategy:
     """Create default composite strategy with all sub-strategies"""
     composite = CompositeStrategy()
 
-    # Add strategies for both gold and silver
-    for asset in [Asset.GOLD, Asset.SILVER]:
+    # Add strategies for all assets (bull and bear)
+    all_assets = [Asset.GOLD, Asset.SILVER, Asset.GOLD_BEAR, Asset.SILVER_BEAR]
+
+    for asset in all_assets:
         composite.add_strategy(MACrossoverStrategy(asset=asset))
         composite.add_strategy(RSIMeanReversionStrategy(asset=asset))
         composite.add_strategy(BollingerBandStrategy(asset=asset))
         composite.add_strategy(MACDStrategy(asset=asset))
 
-    # Add ratio strategy
+    # Add ratio strategy (for bull assets only)
     composite.add_strategy(GoldSilverRatioStrategy())
 
     return composite
+
+
+def get_mirrored_signal(bull_signal: SignalType) -> SignalType:
+    """
+    Get the mirrored signal for bear ETFs.
+    When bull shows SELL, bear should show BUY (and vice versa).
+    """
+    mirror_map = {
+        SignalType.STRONG_BUY: SignalType.STRONG_SELL,
+        SignalType.BUY: SignalType.SELL,
+        SignalType.HOLD: SignalType.HOLD,
+        SignalType.SELL: SignalType.BUY,
+        SignalType.STRONG_SELL: SignalType.STRONG_BUY
+    }
+    return mirror_map.get(bull_signal, SignalType.HOLD)
 
 
 if __name__ == "__main__":
