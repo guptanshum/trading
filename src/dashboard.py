@@ -24,7 +24,7 @@ from indicators import TechnicalIndicators, add_indicators_to_data
 from analysis import StatisticalAnalysis, analyze_market_data
 from strategies import (
     create_default_strategies, Asset, SignalType,
-    CompositeStrategy
+    CompositeStrategy, generate_signal_context, Signal
 )
 from trading_engine import ShadowTradingEngine
 
@@ -200,9 +200,134 @@ def create_ratio_chart(df: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def display_signal_card(
+    asset: Asset,
+    consensus: SignalType,
+    confidence: float,
+    signals: list,
+    context: dict
+):
+    """Display a comprehensive signal card for an asset"""
+
+    # Signal color and styling
+    if consensus in [SignalType.BUY, SignalType.STRONG_BUY]:
+        signal_color = "#28a745"
+        bg_color = "rgba(40, 167, 69, 0.1)"
+        signal_icon = "arrow_upward"
+    elif consensus in [SignalType.SELL, SignalType.STRONG_SELL]:
+        signal_color = "#dc3545"
+        bg_color = "rgba(220, 53, 69, 0.1)"
+        signal_icon = "arrow_downward"
+    else:
+        signal_color = "#6c757d"
+        bg_color = "rgba(108, 117, 125, 0.1)"
+        signal_icon = "remove"
+
+    # Header with signal
+    st.markdown(f"""
+    <div style="background: {bg_color}; padding: 15px; border-radius: 10px; border-left: 4px solid {signal_color}; margin-bottom: 10px;">
+        <h3 style="margin: 0; color: {signal_color};">{asset.value.upper()} - {consensus.name}</h3>
+        <p style="margin: 5px 0 0 0; font-size: 1.1em;">Confidence: <strong>{confidence:.0%}</strong></p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Confluence metrics
+    if context and 'confluence' in context:
+        conf = context['confluence']
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Bullish Signals", conf['bullish_count'])
+        with col2:
+            st.metric("Bearish Signals", conf['bearish_count'])
+        with col3:
+            st.metric("Agreement", f"{conf['agreement_pct']:.0f}%")
+
+    # Market Context
+    if context and 'regime' in context:
+        regime = context['regime']
+        st.markdown("**Market Context:**")
+
+        trend_color = "green" if regime['trend'] == 'UPTREND' else "red" if regime['trend'] == 'DOWNTREND' else "gray"
+        vol_color = "red" if regime['volatility'] == 'HIGH' else "green" if regime['volatility'] == 'LOW' else "gray"
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"Trend: :{trend_color}[**{regime['trend']}**] ({regime['trend_strength']:.1f}% from MA)")
+        with col2:
+            st.markdown(f"Volatility: :{vol_color}[**{regime['volatility']}**] ({regime['volatility_pct']:.2f}% ATR)")
+
+    # Key Levels
+    if context and 'key_levels' in context:
+        levels = context['key_levels']
+        if levels['support'] or levels['resistance']:
+            st.markdown("**Key Levels:**")
+            col1, col2 = st.columns(2)
+            with col1:
+                if levels['support']:
+                    support_str = ", ".join([f"${s:,.2f}" for s in levels['support']])
+                    st.markdown(f":green[Support:] {support_str}")
+                else:
+                    st.markdown(":green[Support:] N/A")
+            with col2:
+                if levels['resistance']:
+                    resistance_str = ", ".join([f"${r:,.2f}" for r in levels['resistance']])
+                    st.markdown(f":red[Resistance:] {resistance_str}")
+                else:
+                    st.markdown(":red[Resistance:] N/A")
+
+    # Risk Context
+    if context and 'risk_context' in context:
+        risk = context['risk_context']
+        if risk['atr_value']:
+            st.markdown("**Risk Management:**")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(f"ATR: ${risk['atr_value']:.2f}")
+                if risk['suggested_stop_long']:
+                    st.markdown(f"Stop (Long): ${risk['suggested_stop_long']:,.2f}")
+            with col2:
+                if risk['suggested_stop_short']:
+                    st.markdown(f"Stop (Short): ${risk['suggested_stop_short']:,.2f}")
+                if risk['risk_reward_note']:
+                    st.caption(risk['risk_reward_note'])
+
+    # Individual Signals with Full Explanations
+    st.markdown("---")
+    st.markdown("**Individual Strategy Signals:**")
+
+    if signals:
+        for s in signals:
+            signal_emoji = "+" if s.signal_type.value > 0 else "-" if s.signal_type.value < 0 else "~"
+            s_color = "green" if s.signal_type.value > 0 else "red" if s.signal_type.value < 0 else "gray"
+
+            with st.expander(f"[{signal_emoji}] {s.strategy}: {s.signal_type.name} ({s.confidence:.0%})", expanded=False):
+                # Full reason - no truncation
+                st.markdown(f"**Analysis:**")
+                st.write(s.reason)
+
+                # Show indicator values
+                if s.indicators:
+                    st.markdown("**Indicator Values:**")
+                    indicator_cols = st.columns(min(len(s.indicators), 4))
+                    for i, (key, value) in enumerate(s.indicators.items()):
+                        with indicator_cols[i % len(indicator_cols)]:
+                            if isinstance(value, float):
+                                if abs(value) > 100:
+                                    st.metric(key.replace('_', ' ').title(), f"${value:,.2f}")
+                                else:
+                                    st.metric(key.replace('_', ' ').title(), f"{value:.2f}")
+                            else:
+                                st.metric(key.replace('_', ' ').title(), str(value))
+    else:
+        st.info("No active signals from individual strategies")
+
+
 def display_signals(df: pd.DataFrame, strategy: CompositeStrategy):
-    """Display current trading signals"""
+    """Display current trading signals with comprehensive analysis"""
     st.subheader("Trading Signals")
+
+    # Last updated timestamp
+    st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     col1, col2 = st.columns(2)
 
@@ -210,27 +335,11 @@ def display_signals(df: pd.DataFrame, strategy: CompositeStrategy):
         with col:
             consensus, confidence, signals = strategy.get_consensus_signal(df, asset)
 
-            # Signal color
-            if consensus in [SignalType.BUY, SignalType.STRONG_BUY]:
-                color = "green"
-                emoji = ""
-            elif consensus in [SignalType.SELL, SignalType.STRONG_SELL]:
-                color = "red"
-                emoji = ""
-            else:
-                color = "gray"
-                emoji = ""
+            # Generate comprehensive context
+            context = generate_signal_context(df, asset, signals)
 
-            st.markdown(f"### {asset.value.upper()} {emoji}")
-            st.markdown(f"**Signal:** :{color}[{consensus.name}]")
-            st.markdown(f"**Confidence:** {confidence:.0%}")
-
-            # Show contributing signals
-            if signals:
-                with st.expander("Signal Details"):
-                    for s in signals[-5:]:
-                        st.text(f"{s.strategy}: {s.signal_type.name} ({s.confidence:.0%})")
-                        st.caption(s.reason[:80])
+            # Display the rich signal card
+            display_signal_card(asset, consensus, confidence, signals, context)
 
 
 def display_portfolio(engine: ShadowTradingEngine):
@@ -400,8 +509,8 @@ def main():
         # Show indicators
         show_indicators = st.checkbox("Show Indicators", value=True)
 
-        # Auto refresh
-        auto_refresh = st.checkbox("Auto Refresh (60s)", value=False)
+        # Auto refresh - enabled by default
+        auto_refresh = st.checkbox("Auto Refresh (60s)", value=True)
 
         st.divider()
 
@@ -430,6 +539,13 @@ def main():
     if df.empty:
         st.warning("No data available. Market might be closed.")
         return
+
+    # Data loaded timestamp - prominent display
+    data_time = datetime.now()
+    if auto_refresh:
+        st.success(f"Data loaded at {data_time.strftime('%H:%M:%S')} | Auto-refresh enabled (60s)")
+    else:
+        st.info(f"Data loaded at {data_time.strftime('%H:%M:%S')} | Auto-refresh disabled")
 
     # Get strategy and engine
     strategy = get_strategy()

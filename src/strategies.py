@@ -3,10 +3,11 @@ Trading strategies module for Gold/Silver ETF trading
 """
 import pandas as pd
 import numpy as np
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime
+from scipy import stats
 
 from config import IndicatorSettings, StrategySettings
 
@@ -105,31 +106,63 @@ class MACrossoverStrategy(BaseStrategy):
                 continue
 
             if row['crossover'] == True:  # Bullish crossover
+                fast_ma = row[sma_fast_col]
+                slow_ma = row[sma_slow_col]
+                spread_pct = ((fast_ma - slow_ma) / slow_ma) * 100
+                price = row[close_col]
+                price_vs_ma = ((price - slow_ma) / slow_ma) * 100
+
+                reason = (
+                    f"BULLISH CROSSOVER: {self.fast_period}-SMA (${fast_ma:,.2f}) crossed above "
+                    f"{self.slow_period}-SMA (${slow_ma:,.2f}). "
+                    f"Spread: +{spread_pct:.2f}%. "
+                    f"Price ${price:,.2f} is {price_vs_ma:+.2f}% from slow MA. "
+                    f"Momentum shifting bullish - trend reversal signal."
+                )
+
                 signals.append(Signal(
                     timestamp=idx if isinstance(idx, datetime) else datetime.now(),
                     asset=self.asset,
                     signal_type=SignalType.BUY,
                     strategy=self.name,
-                    price=row[close_col],
+                    price=price,
                     confidence=0.7,
-                    reason=f"Fast MA ({self.fast_period}) crossed above Slow MA ({self.slow_period})",
+                    reason=reason,
                     indicators={
-                        'fast_ma': row[sma_fast_col],
-                        'slow_ma': row[sma_slow_col]
+                        'fast_ma': fast_ma,
+                        'slow_ma': slow_ma,
+                        'spread_pct': spread_pct,
+                        'price_vs_slow_ma_pct': price_vs_ma
                     }
                 ))
             elif row['crossover'] == False:  # Bearish crossover
+                fast_ma = row[sma_fast_col]
+                slow_ma = row[sma_slow_col]
+                spread_pct = ((fast_ma - slow_ma) / slow_ma) * 100
+                price = row[close_col]
+                price_vs_ma = ((price - slow_ma) / slow_ma) * 100
+
+                reason = (
+                    f"BEARISH CROSSOVER: {self.fast_period}-SMA (${fast_ma:,.2f}) crossed below "
+                    f"{self.slow_period}-SMA (${slow_ma:,.2f}). "
+                    f"Spread: {spread_pct:.2f}%. "
+                    f"Price ${price:,.2f} is {price_vs_ma:+.2f}% from slow MA. "
+                    f"Momentum shifting bearish - trend reversal signal."
+                )
+
                 signals.append(Signal(
                     timestamp=idx if isinstance(idx, datetime) else datetime.now(),
                     asset=self.asset,
                     signal_type=SignalType.SELL,
                     strategy=self.name,
-                    price=row[close_col],
+                    price=price,
                     confidence=0.7,
-                    reason=f"Fast MA ({self.fast_period}) crossed below Slow MA ({self.slow_period})",
+                    reason=reason,
                     indicators={
-                        'fast_ma': row[sma_fast_col],
-                        'slow_ma': row[sma_slow_col]
+                        'fast_ma': fast_ma,
+                        'slow_ma': slow_ma,
+                        'spread_pct': spread_pct,
+                        'price_vs_slow_ma_pct': price_vs_ma
                     }
                 ))
 
@@ -172,28 +205,68 @@ class RSIMeanReversionStrategy(BaseStrategy):
 
             # Oversold bounce (RSI crosses above oversold level)
             if prev_rsi is not None and prev_rsi < self.oversold and rsi >= self.oversold:
+                rsi_change = rsi - prev_rsi
+                oversold_depth = self.oversold - prev_rsi
+                confidence = min(0.6 + (self.oversold - prev_rsi) / 100, 0.95)
+                price = row[close_col]
+
+                depth_desc = "extreme" if oversold_depth > 10 else "significant" if oversold_depth > 5 else "moderate"
+
+                reason = (
+                    f"RSI REVERSAL FROM OVERSOLD: RSI rose from {prev_rsi:.1f} to {rsi:.1f} "
+                    f"(+{rsi_change:.1f} pts), crossing above {self.oversold} threshold. "
+                    f"Oversold depth was {depth_desc} ({oversold_depth:.1f} pts below threshold). "
+                    f"Price: ${price:,.2f}. "
+                    f"High probability mean reversion setup - selling pressure exhausted."
+                )
+
                 signals.append(Signal(
                     timestamp=idx if isinstance(idx, datetime) else datetime.now(),
                     asset=self.asset,
                     signal_type=SignalType.BUY,
                     strategy=self.name,
-                    price=row[close_col],
-                    confidence=0.6 + (self.oversold - prev_rsi) / 100,
-                    reason=f"RSI bounced from oversold ({prev_rsi:.1f} -> {rsi:.1f})",
-                    indicators={'rsi': rsi}
+                    price=price,
+                    confidence=confidence,
+                    reason=reason,
+                    indicators={
+                        'rsi': rsi,
+                        'prev_rsi': prev_rsi,
+                        'rsi_change': rsi_change,
+                        'oversold_depth': oversold_depth
+                    }
                 ))
 
             # Overbought reversal (RSI crosses below overbought level)
             if prev_rsi is not None and prev_rsi > self.overbought and rsi <= self.overbought:
+                rsi_change = prev_rsi - rsi
+                overbought_excess = prev_rsi - self.overbought
+                confidence = min(0.6 + (prev_rsi - self.overbought) / 100, 0.95)
+                price = row[close_col]
+
+                excess_desc = "extreme" if overbought_excess > 10 else "significant" if overbought_excess > 5 else "moderate"
+
+                reason = (
+                    f"RSI REVERSAL FROM OVERBOUGHT: RSI fell from {prev_rsi:.1f} to {rsi:.1f} "
+                    f"(-{rsi_change:.1f} pts), crossing below {self.overbought} threshold. "
+                    f"Overbought excess was {excess_desc} ({overbought_excess:.1f} pts above threshold). "
+                    f"Price: ${price:,.2f}. "
+                    f"Mean reversion signal - buying pressure exhausted."
+                )
+
                 signals.append(Signal(
                     timestamp=idx if isinstance(idx, datetime) else datetime.now(),
                     asset=self.asset,
                     signal_type=SignalType.SELL,
                     strategy=self.name,
-                    price=row[close_col],
-                    confidence=0.6 + (prev_rsi - self.overbought) / 100,
-                    reason=f"RSI fell from overbought ({prev_rsi:.1f} -> {rsi:.1f})",
-                    indicators={'rsi': rsi}
+                    price=price,
+                    confidence=confidence,
+                    reason=reason,
+                    indicators={
+                        'rsi': rsi,
+                        'prev_rsi': prev_rsi,
+                        'rsi_change': rsi_change,
+                        'overbought_excess': overbought_excess
+                    }
                 ))
 
             prev_rsi = rsi
@@ -239,6 +312,20 @@ class BollingerBandStrategy(BaseStrategy):
 
             # Price bounces off lower band
             if prev_close is not None and prev_close <= lower and close > lower:
+                mid = row[bb_mid]
+                band_width = ((upper - lower) / mid) * 100
+                pct_from_lower = ((close - lower) / lower) * 100
+                pct_to_mid = ((mid - close) / close) * 100
+
+                width_desc = "tight" if band_width < 3 else "normal" if band_width < 6 else "wide"
+
+                reason = (
+                    f"LOWER BB BOUNCE: Price touched ${lower:,.2f} (lower band) and recovered to ${close:,.2f}. "
+                    f"Band width: {band_width:.1f}% ({width_desc} volatility). "
+                    f"Price now {pct_from_lower:.2f}% above lower band, {pct_to_mid:.2f}% below middle band (${mid:,.2f}). "
+                    f"Mean reversion opportunity - price reverted from 2-sigma extreme."
+                )
+
                 signals.append(Signal(
                     timestamp=idx if isinstance(idx, datetime) else datetime.now(),
                     asset=self.asset,
@@ -246,16 +333,32 @@ class BollingerBandStrategy(BaseStrategy):
                     strategy=self.name,
                     price=close,
                     confidence=0.65,
-                    reason=f"Price bounced off lower Bollinger Band ({lower:.2f})",
+                    reason=reason,
                     indicators={
                         'bb_upper': upper,
                         'bb_lower': lower,
-                        'bb_mid': row[bb_mid]
+                        'bb_mid': mid,
+                        'band_width_pct': band_width,
+                        'pct_from_lower': pct_from_lower
                     }
                 ))
 
             # Price bounces off upper band
             if prev_close is not None and prev_close >= upper and close < upper:
+                mid = row[bb_mid]
+                band_width = ((upper - lower) / mid) * 100
+                pct_from_upper = ((upper - close) / close) * 100
+                pct_from_mid = ((close - mid) / mid) * 100
+
+                width_desc = "tight" if band_width < 3 else "normal" if band_width < 6 else "wide"
+
+                reason = (
+                    f"UPPER BB REJECTION: Price touched ${upper:,.2f} (upper band) and pulled back to ${close:,.2f}. "
+                    f"Band width: {band_width:.1f}% ({width_desc} volatility). "
+                    f"Price now {pct_from_upper:.2f}% below upper band, {pct_from_mid:.2f}% above middle band (${mid:,.2f}). "
+                    f"Mean reversion signal - price rejected at 2-sigma extreme."
+                )
+
                 signals.append(Signal(
                     timestamp=idx if isinstance(idx, datetime) else datetime.now(),
                     asset=self.asset,
@@ -263,11 +366,13 @@ class BollingerBandStrategy(BaseStrategy):
                     strategy=self.name,
                     price=close,
                     confidence=0.65,
-                    reason=f"Price rejected at upper Bollinger Band ({upper:.2f})",
+                    reason=reason,
                     indicators={
                         'bb_upper': upper,
                         'bb_lower': lower,
-                        'bb_mid': row[bb_mid]
+                        'bb_mid': mid,
+                        'band_width_pct': band_width,
+                        'pct_from_upper': pct_from_upper
                     }
                 ))
 
@@ -306,33 +411,67 @@ class MACDStrategy(BaseStrategy):
                 continue
 
             if row['macd_cross'] == True:  # Bullish crossover
+                macd = row[macd_col]
+                signal = row[signal_col]
+                hist = row[hist_col]
+                price = row[close_col]
+
+                # Determine if crossover is above or below zero line
+                zone = "above zero (bullish territory)" if macd > 0 else "below zero (recovery from bearish)"
+
+                reason = (
+                    f"BULLISH MACD CROSSOVER: MACD ({macd:.3f}) crossed above Signal ({signal:.3f}). "
+                    f"Histogram turned positive ({hist:+.3f}). "
+                    f"Crossover occurred {zone}. "
+                    f"Price: ${price:,.2f}. "
+                    f"Momentum shifting bullish - trend strength increasing."
+                )
+
                 signals.append(Signal(
                     timestamp=idx if isinstance(idx, datetime) else datetime.now(),
                     asset=self.asset,
                     signal_type=SignalType.BUY,
                     strategy=self.name,
-                    price=row[close_col],
+                    price=price,
                     confidence=0.7,
-                    reason="MACD crossed above signal line",
+                    reason=reason,
                     indicators={
-                        'macd': row[macd_col],
-                        'signal': row[signal_col],
-                        'histogram': row[hist_col]
+                        'macd': macd,
+                        'signal': signal,
+                        'histogram': hist,
+                        'above_zero': macd > 0
                     }
                 ))
             elif row['macd_cross'] == False:  # Bearish crossover
+                macd = row[macd_col]
+                signal = row[signal_col]
+                hist = row[hist_col]
+                price = row[close_col]
+
+                # Determine if crossover is above or below zero line
+                zone = "below zero (bearish territory)" if macd < 0 else "above zero (reversal from bullish)"
+
+                reason = (
+                    f"BEARISH MACD CROSSOVER: MACD ({macd:.3f}) crossed below Signal ({signal:.3f}). "
+                    f"Histogram turned negative ({hist:.3f}). "
+                    f"Crossover occurred {zone}. "
+                    f"Price: ${price:,.2f}. "
+                    f"Momentum shifting bearish - trend strength weakening."
+                )
+
                 signals.append(Signal(
                     timestamp=idx if isinstance(idx, datetime) else datetime.now(),
                     asset=self.asset,
                     signal_type=SignalType.SELL,
                     strategy=self.name,
-                    price=row[close_col],
+                    price=price,
                     confidence=0.7,
-                    reason="MACD crossed below signal line",
+                    reason=reason,
                     indicators={
-                        'macd': row[macd_col],
-                        'signal': row[signal_col],
-                        'histogram': row[hist_col]
+                        'macd': macd,
+                        'signal': signal,
+                        'histogram': hist,
+                        'above_zero': macd > 0
                     }
                 ))
 
@@ -375,28 +514,76 @@ class GoldSilverRatioStrategy(BaseStrategy):
 
             # Ratio very high - silver undervalued
             if prev_zscore is not None and prev_zscore > 2 and zscore <= 2:
+                mean_ratio = row['ratio_ma']
+                std_ratio = row['ratio_std']
+                confidence = min(0.5 + abs(zscore) * 0.1, 0.9)
+                silver_price = row['silver_close']
+                gold_price = row['gold_close']
+
+                # Calculate percentile
+                percentile = 50 + (zscore * 34)  # Approximate percentile from z-score
+                percentile = min(max(percentile, 0), 100)
+
+                reason = (
+                    f"G/S RATIO MEAN REVERSION (BUY SILVER): Current ratio {ratio:.1f} "
+                    f"(z-score: {zscore:+.2f}) reverting toward mean of {mean_ratio:.1f}. "
+                    f"Ratio was in ~{percentile:.0f}th percentile - historically extreme. "
+                    f"Silver (${silver_price:,.2f}) undervalued relative to Gold (${gold_price:,.2f}). "
+                    f"Expect ratio compression as silver outperforms."
+                )
+
                 signals.append(Signal(
                     timestamp=idx if isinstance(idx, datetime) else datetime.now(),
                     asset=Asset.SILVER,
                     signal_type=SignalType.BUY,
                     strategy=self.name,
-                    price=row['silver_close'],
-                    confidence=min(0.5 + abs(zscore) * 0.1, 0.9),
-                    reason=f"G/S ratio ({ratio:.1f}) reverting from high - silver undervalued",
-                    indicators={'gs_ratio': ratio, 'zscore': zscore}
+                    price=silver_price,
+                    confidence=confidence,
+                    reason=reason,
+                    indicators={
+                        'gs_ratio': ratio,
+                        'zscore': zscore,
+                        'mean_ratio': mean_ratio,
+                        'std_ratio': std_ratio,
+                        'percentile': percentile
+                    }
                 ))
 
             # Ratio very low - gold undervalued
             if prev_zscore is not None and prev_zscore < -2 and zscore >= -2:
+                mean_ratio = row['ratio_ma']
+                std_ratio = row['ratio_std']
+                confidence = min(0.5 + abs(zscore) * 0.1, 0.9)
+                silver_price = row['silver_close']
+                gold_price = row['gold_close']
+
+                # Calculate percentile
+                percentile = 50 + (zscore * 34)  # Approximate percentile from z-score
+                percentile = min(max(percentile, 0), 100)
+
+                reason = (
+                    f"G/S RATIO MEAN REVERSION (BUY GOLD): Current ratio {ratio:.1f} "
+                    f"(z-score: {zscore:+.2f}) reverting toward mean of {mean_ratio:.1f}. "
+                    f"Ratio was in ~{percentile:.0f}th percentile - historically extreme. "
+                    f"Gold (${gold_price:,.2f}) undervalued relative to Silver (${silver_price:,.2f}). "
+                    f"Expect ratio expansion as gold outperforms."
+                )
+
                 signals.append(Signal(
                     timestamp=idx if isinstance(idx, datetime) else datetime.now(),
                     asset=Asset.GOLD,
                     signal_type=SignalType.BUY,
                     strategy=self.name,
-                    price=row['gold_close'],
-                    confidence=min(0.5 + abs(zscore) * 0.1, 0.9),
-                    reason=f"G/S ratio ({ratio:.1f}) reverting from low - gold undervalued",
-                    indicators={'gs_ratio': ratio, 'zscore': zscore}
+                    price=gold_price,
+                    confidence=confidence,
+                    reason=reason,
+                    indicators={
+                        'gs_ratio': ratio,
+                        'zscore': zscore,
+                        'mean_ratio': mean_ratio,
+                        'std_ratio': std_ratio,
+                        'percentile': percentile
+                    }
                 ))
 
             prev_zscore = zscore
@@ -480,6 +667,138 @@ class CompositeStrategy(BaseStrategy):
         confidence = min(abs(avg_score) / 2, 1.0)
 
         return consensus, confidence, recent_signals
+
+
+def generate_signal_context(
+    df: pd.DataFrame,
+    asset: Asset,
+    signals: List[Signal]
+) -> Dict[str, Any]:
+    """
+    Generate comprehensive market context for signals.
+
+    Returns dict with:
+    - confluence: How many strategies agree
+    - market_regime: Trending/ranging, volatility state
+    - key_levels: Support/resistance
+    - risk_context: ATR-based stop suggestions
+    """
+    prefix = f"{asset.value}_"
+    close_col = f"{prefix}close"
+
+    if close_col not in df.columns or len(df) < 20:
+        return {}
+
+    current_price = df[close_col].iloc[-1]
+    prices = df[close_col]
+
+    # Confluence analysis
+    buy_signals = [s for s in signals if s.signal_type.value > 0]
+    sell_signals = [s for s in signals if s.signal_type.value < 0]
+    total_strategies = len(set(s.strategy for s in signals)) if signals else 0
+
+    confluence = {
+        'bullish_count': len(buy_signals),
+        'bearish_count': len(sell_signals),
+        'total_strategies': max(total_strategies, 1),
+        'agreement_pct': 0
+    }
+
+    if signals:
+        dominant = max(len(buy_signals), len(sell_signals))
+        confluence['agreement_pct'] = (dominant / len(signals)) * 100
+
+    # Market regime detection
+    sma_slow_col = f"{prefix}sma_slow"
+    atr_col = f"{prefix}atr"
+
+    regime = {
+        'trend': 'NEUTRAL',
+        'trend_strength': 0,
+        'volatility': 'NORMAL',
+        'volatility_pct': 0
+    }
+
+    if sma_slow_col in df.columns:
+        sma_slow = df[sma_slow_col].iloc[-1]
+        if not pd.isna(sma_slow):
+            price_vs_sma = ((current_price - sma_slow) / sma_slow) * 100
+            regime['trend_strength'] = abs(price_vs_sma)
+
+            if price_vs_sma > 2:
+                regime['trend'] = 'UPTREND'
+            elif price_vs_sma < -2:
+                regime['trend'] = 'DOWNTREND'
+            else:
+                regime['trend'] = 'RANGING'
+
+    # Volatility regime
+    if atr_col in df.columns:
+        current_atr = df[atr_col].iloc[-1]
+        if not pd.isna(current_atr):
+            atr_pct = (current_atr / current_price) * 100
+            regime['volatility_pct'] = atr_pct
+
+            # Compare to historical ATR
+            hist_atr = df[atr_col].rolling(60).mean().iloc[-1]
+            if not pd.isna(hist_atr):
+                atr_ratio = current_atr / hist_atr
+                if atr_ratio > 1.5:
+                    regime['volatility'] = 'HIGH'
+                elif atr_ratio < 0.7:
+                    regime['volatility'] = 'LOW'
+
+    # Support/Resistance detection
+    key_levels = {'support': [], 'resistance': []}
+
+    # Simple pivot-based support/resistance
+    rolling_min = prices.rolling(20).min()
+    rolling_max = prices.rolling(20).max()
+
+    # Find recent support levels (local minima)
+    support_candidates = prices[prices == rolling_min].tail(5).values
+    if len(support_candidates) > 0:
+        key_levels['support'] = sorted(set(round(s, 2) for s in support_candidates if s < current_price))[-3:]
+
+    # Find recent resistance levels (local maxima)
+    resistance_candidates = prices[prices == rolling_max].tail(5).values
+    if len(resistance_candidates) > 0:
+        key_levels['resistance'] = sorted(set(round(r, 2) for r in resistance_candidates if r > current_price))[:3]
+
+    # Risk context - ATR-based stop suggestions
+    risk_context = {
+        'suggested_stop_long': None,
+        'suggested_stop_short': None,
+        'atr_value': None,
+        'risk_reward_note': ''
+    }
+
+    if atr_col in df.columns:
+        current_atr = df[atr_col].iloc[-1]
+        if not pd.isna(current_atr):
+            risk_context['atr_value'] = current_atr
+            risk_context['suggested_stop_long'] = round(current_price - (2 * current_atr), 2)
+            risk_context['suggested_stop_short'] = round(current_price + (2 * current_atr), 2)
+
+            # Risk/reward note based on nearest support/resistance
+            if key_levels['resistance'] and key_levels['support']:
+                nearest_resistance = min(key_levels['resistance']) if key_levels['resistance'] else current_price * 1.05
+                nearest_support = max(key_levels['support']) if key_levels['support'] else current_price * 0.95
+
+                upside = nearest_resistance - current_price
+                downside = current_price - nearest_support
+
+                if downside > 0:
+                    rr_ratio = upside / downside
+                    risk_context['risk_reward_note'] = f"Risk/Reward to nearest levels: {rr_ratio:.2f}:1"
+
+    return {
+        'confluence': confluence,
+        'regime': regime,
+        'key_levels': key_levels,
+        'risk_context': risk_context,
+        'current_price': current_price
+    }
 
 
 def create_default_strategies() -> CompositeStrategy:
